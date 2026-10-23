@@ -161,6 +161,87 @@ public class ArmTemplateSemanticModelTests
         items[2].Type.Should().BeOfType<BooleanType>();
     }
 
+    [DataRow(@"{ ""type"": ""int"" }")]
+    [DataRow("true")]
+    [TestMethod]
+    public void Model_does_not_close_tuple_when_prefixItems_has_open_items(string itemsSchema)
+    {
+        var parameterType = GetLoadedParameterType(@"{
+          ""$schema"": ""https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"",
+          ""contentVersion"": ""1.0.0.0"",
+          ""languageVersion"": ""2.0"",
+          ""resources"": {},
+          ""parameters"": {
+            ""tupleParameter"": {
+              ""type"": ""array"",
+              ""prefixItems"": [
+                { ""type"": ""string"" }
+              ],
+              ""items"": " + itemsSchema + @"
+            }
+          }
+        }
+        ", "tupleParameter");
+
+        // TupleType can't describe items after the prefix, so the loader widens to an array of every possible item.
+        parameterType.Should().BeOfType<TypedArrayType>();
+        var itemType = parameterType.As<TypedArrayType>().Item.Type;
+        TypeValidator.AreTypesAssignable(LanguageConstants.String, itemType).Should().BeTrue();
+        TypeValidator.AreTypesAssignable(LanguageConstants.Int, itemType).Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void Model_keeps_tuple_when_prefixItems_has_closed_items()
+    {
+        var parameterType = GetLoadedParameterType(@"{
+          ""$schema"": ""https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"",
+          ""contentVersion"": ""1.0.0.0"",
+          ""languageVersion"": ""2.0"",
+          ""resources"": {},
+          ""parameters"": {
+            ""tupleParameter"": {
+              ""type"": ""array"",
+              ""prefixItems"": [
+                { ""type"": ""string"" }
+              ],
+              ""items"": false
+            }
+          }
+        }
+        ", "tupleParameter");
+
+        parameterType.Should().BeOfType<TupleType>();
+    }
+
+    [TestMethod]
+    public void Model_defers_recursive_open_tuple_items()
+    {
+        var parameterType = GetLoadedParameterType("""
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "languageVersion": "2.0",
+  "definitions": {
+    "recursive": {
+      "type": "array",
+      "prefixItems": [{ "type": "string" }],
+      "items": { "$ref": "#/definitions/recursive" }
+    }
+  },
+  "parameters": {
+    "recursiveParameter": { "$ref": "#/definitions/recursive" }
+  },
+  "resources": {}
+}
+""", "recursiveParameter");
+
+        parameterType.Should().BeOfType<TypedArrayType>();
+        var itemType = parameterType.As<TypedArrayType>().Item.Type.Should().BeOfType<UnionType>().Subject;
+        itemType.Members.Select(member => member.Type).Should().Contain(type => type is StringType);
+        var recursiveItem = itemType.Members.Select(member => member.Type).OfType<TypedArrayType>().Single();
+        recursiveItem.Item.Type.Should().BeOfType<UnionType>();
+    }
+
     [TestMethod]
     public void Model_creates_complex_type_from_nested_constraints()
     {

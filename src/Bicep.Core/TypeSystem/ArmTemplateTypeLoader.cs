@@ -165,11 +165,32 @@ public static class ArmTemplateTypeLoader
         {
             TupleTypeNameBuilder nameBuilder = new();
             List<ITypeReference> tupleMembers = new();
+            List<string> itemNames = [];
             foreach (var prefixItem in prefixItems)
             {
                 var (type, typeName) = GetDeferrableTypeInfo(context, prefixItem);
                 nameBuilder.AppendItem(typeName);
                 tupleMembers.Add(type);
+                itemNames.Add(typeName);
+            }
+
+            // TupleType does not support an "AdditionalItemsType" for items after the tuple. Rather than treat an open tail as closed,
+            // widen to an array of every possible item. Bicep itself emits closed tuples ("items": false).
+            if (schemaNode.Items?.SchemaNode is { } additionalItems)
+            {
+                var (additionalItemsType, additionalItemsName) = GetDeferrableTypeInfo(context, additionalItems);
+                itemNames.Add(additionalItemsName);
+                return new TypedArrayType(
+                    $"({string.Join(" | ", itemNames.Distinct(LanguageConstants.IdentifierComparer))})[]",
+                    new DeferredTypeReference(() => TypeHelper.CreateTypeUnion([.. tupleMembers, additionalItemsType])),
+                    default,
+                    schemaNode.MinLength?.Value,
+                    schemaNode.MaxLength?.Value);
+            }
+
+            if (schemaNode.Items?.BooleanValue == true)
+            {
+                return new TypedArrayType(LanguageConstants.Any, default, schemaNode.MinLength?.Value, schemaNode.MaxLength?.Value);
             }
 
             return new TupleType(nameBuilder.ToString(), [.. tupleMembers], default);
@@ -185,9 +206,6 @@ public static class ArmTemplateTypeLoader
 
             return new TypedArrayType(ToTypeReference(context, items), default, schemaNode.MinLength?.Value, schemaNode.MaxLength?.Value);
         }
-
-        // TODO it's possible to encounter an array with a defined prefix and either a schema or a boolean for "items."
-        // TupleType does not support an "AdditionalItemsType" for items after the tuple, but when it does, update this type reader to handle the combination of "items" and "prefixItems"
 
         return TypeFactory.CreateArrayType(schemaNode.MinLength?.Value, schemaNode.MaxLength?.Value);
     }
