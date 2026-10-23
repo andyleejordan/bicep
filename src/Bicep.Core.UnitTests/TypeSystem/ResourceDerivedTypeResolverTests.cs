@@ -181,6 +181,30 @@ public class ResourceDerivedTypeResolverTests
         bound.ReturnType.Should().BeSameAs(hydrated);
     }
 
+    [TestMethod]
+    public void Preserves_secure_flag_of_fallback_type()
+    {
+        var hydratedObject = new ObjectType("settings", TypeSymbolValidationFlags.Default, [new NamedTypeProperty("key", LanguageConstants.String)], null);
+        var (objectSut, objectTypeRef) = SetupResolver(hydratedObject);
+
+        var resolvedObject = objectSut.ResolveResourceDerivedTypes(
+            new UnresolvedResourceDerivedType(objectTypeRef, [], LanguageConstants.SecureObject, ResourceDerivedTypeVariant.Input));
+        resolvedObject.ValidationFlags.Should().HaveFlag(TypeSymbolValidationFlags.IsSecure);
+        resolvedObject.Should().BeOfType<ObjectType>().Subject.Properties.Should().ContainKey("key");
+
+        var (stringSut, stringTypeRef) = SetupResolver(TypeFactory.CreateStringType(minLength: 1));
+        var resolvedString = stringSut.ResolveResourceDerivedTypes(
+            new UnresolvedResourceDerivedType(stringTypeRef, [], LanguageConstants.SecureString, ResourceDerivedTypeVariant.Input));
+        resolvedString.ValidationFlags.Should().HaveFlag(TypeSymbolValidationFlags.IsSecure);
+        resolvedString.Should().BeOfType<StringType>().Subject.MinLength.Should().Be(1);
+
+        // Nullable parameters wrap the declared schema in a union with null.
+        var (nullableSut, nullableTypeRef) = SetupResolver(hydratedObject);
+        var resolvedNullable = nullableSut.ResolveResourceDerivedTypes(
+            new UnresolvedResourceDerivedType(nullableTypeRef, [], TypeHelper.CreateTypeUnion(LanguageConstants.Null, LanguageConstants.SecureObject), ResourceDerivedTypeVariant.Input));
+        resolvedNullable.ValidationFlags.Should().HaveFlag(TypeSymbolValidationFlags.IsSecure);
+    }
+
     private static (ResourceDerivedTypeResolver sut, ResourceTypeReference unhydratedTypeRef) SetupResolver(TypeSymbol hydratedType)
     {
         var unhydratedTypeRef = new ResourceTypeReference("type", "version");
