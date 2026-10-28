@@ -176,6 +176,8 @@ public static class ArmTemplateTypeLoader
 
             // TupleType does not support an "AdditionalItemsType" for items after the tuple. Rather than treat an open tail as closed,
             // widen to an array of every possible item. Bicep itself emits closed tuples ("items": false).
+            // TODO: Preserve prefix positions and the required prefix length when TupleType supports additional items.
+            // Widening loses those constraints and can conflate secure prefix items with an insecure tail.
             if (schemaNode.Items?.SchemaNode is { } additionalItems)
             {
                 var (additionalItemsType, additionalItemsName) = GetDeferrableTypeInfo(context, additionalItems);
@@ -193,6 +195,7 @@ public static class ArmTemplateTypeLoader
                 return new TypedArrayType(LanguageConstants.Any, default, schemaNode.MinLength?.Value, schemaNode.MaxLength?.Value);
             }
 
+            // TODO: Handle omitted items as an open tail too; ARM defaults it to true.
             return new TupleType(nameBuilder.ToString(), [.. tupleMembers], default);
         }
 
