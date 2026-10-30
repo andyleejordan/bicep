@@ -582,6 +582,34 @@ module retained 'child.bicep' = {
             Message("plainObj.token", "secure value 'parentSecret'"));
 
     [TestMethod]
+    [DataRow("cfg.nested.token", "cfg.nested.name")]
+    [DataRow("cfg['nested']['token']", "cfg['nested']['name']")]
+    [DataRow("(cfg.nested)!.token", "(cfg.nested)!.name")]
+    [DataRow("(cfg).nested.?token", "(cfg).nested.?name")]
+    public void Access_chains_preserve_derived_secrets_without_tainting_siblings(string secretAccess, string publicAccess)
+        => CompileAndTest($$"""
+var cfg = {
+  nested: {
+    token: 'prefix-${parentSecret}'
+    name: 'public'
+  }
+}
+
+module secret 'child.bicep' = {
+  params: {
+    plain: '${{{secretAccess}}}-suffix'
+  }
+}
+
+module public 'child.bicep' = {
+  params: {
+    plain: '${{{publicAccess}}}-suffix'
+  }
+}
+""",
+            Message("plain", "secure value 'parentSecret'"));
+
+    [TestMethod]
     public void Derived_secrets_should_be_followed_through_lambda_items()
         => CompileAndTest("""
 var items = [

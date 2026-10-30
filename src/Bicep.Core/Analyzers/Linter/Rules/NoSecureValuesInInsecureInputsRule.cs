@@ -117,7 +117,7 @@ public sealed class NoSecureValuesInInsecureInputsRule : LinterRuleBase
                     => AnyPosition(GetSecretSources(filtered)),
                 _ when SecureValueFlow.TryGetCombinedValues(model, syntax) is { } combined
                     => combined.SelectMany(value => AnyPosition(GetSecretSources(value))),
-                _ when IsDirectReference(syntax) => GetDirectReferenceSources(syntax),
+                _ when SecureValueFlow.GetAccessChain(syntax).Last() is VariableAccessSyntax => GetDirectReferenceSources(syntax),
                 _ => GetExpressionSources(syntax),
             };
 
@@ -277,7 +277,7 @@ public sealed class NoSecureValuesInInsecureInputsRule : LinterRuleBase
                 references.Add(syntax);
 
                 // Anything other than a symbol at the root of an access chain may contain references of its own.
-                if (GetAccessRoot(syntax) is not VariableAccessSyntax and var root)
+                if (SecureValueFlow.GetAccessChain(syntax).Last() is not VariableAccessSyntax and var root)
                 {
                     Visit(root);
                 }
@@ -287,14 +287,6 @@ public sealed class NoSecureValuesInInsecureInputsRule : LinterRuleBase
 
             base.VisitInternal(syntax);
         }
-
-        private static SyntaxBase GetAccessRoot(SyntaxBase syntax) => syntax switch
-        {
-            AccessExpressionSyntax access => GetAccessRoot(access.BaseExpression),
-            NonNullAssertionSyntax nonNull => GetAccessRoot(nonNull.BaseExpression),
-            ParenthesizedExpressionSyntax parenthesized => GetAccessRoot(parenthesized.Expression),
-            _ => syntax,
-        };
 
         public override void VisitInstanceFunctionCallSyntax(InstanceFunctionCallSyntax syntax)
         {
@@ -316,15 +308,6 @@ public sealed class NoSecureValuesInInsecureInputsRule : LinterRuleBase
     /// </summary>
     private static IEnumerable<SecretSource> AnyPosition(IEnumerable<SecretSource> sources)
         => sources.Select(source => source with { Path = SecureValueFlow.ForgetPosition(source.Path) });
-
-    private static bool IsDirectReference(SyntaxBase syntax) => syntax switch
-    {
-        VariableAccessSyntax => true,
-        AccessExpressionSyntax access => IsDirectReference(access.BaseExpression),
-        NonNullAssertionSyntax nonNull => IsDirectReference(nonNull.BaseExpression),
-        ParenthesizedExpressionSyntax parenthesized => IsDirectReference(parenthesized.Expression),
-        _ => false,
-    };
 
     private static SyntaxBase? GetLambdaBody(SyntaxBase syntax) => syntax switch
     {

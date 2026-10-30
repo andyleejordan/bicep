@@ -187,7 +187,7 @@ public sealed class UseSecureValueForSecureInputsRule : LinterRuleBase
                         => @object.Properties.Values
                             .Where(property => !overridden.Contains(property.Name))
                             .All(property => IsSecureAtPath(container, leaf, [property.Name])) &&
-                            (SecureValueFlow.TryGetAdditionalPropertiesType(@object) is null || IsSecureAtPath(container, leaf, [SecureValueFlow.AnyMember])),
+                            (!@object.HasExplicitAdditionalPropertiesType || IsSecureAtPath(container, leaf, [SecureValueFlow.AnyMember])),
                     _ => IsSecureAtPath(container, leaf, []),
                 }));
 

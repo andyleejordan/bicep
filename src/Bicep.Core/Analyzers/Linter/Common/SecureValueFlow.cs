@@ -194,13 +194,23 @@ public static class SecureValueFlow
         => !path.IsEmpty && IsIndexSegment(path[0]) ? path.SetItem(0, AnyIndex) : path;
 
     /// <summary>
-    /// The type of the members an object doesn't declare, if it allows any. A closed object type still has an
-    /// <c>any</c> fallback, which only lets Bicep warn about, rather than reject, access to an undeclared member.
+    /// Walks an access chain from its outermost expression to its root, including parentheses and assertions.
     /// </summary>
-    public static TypeSymbol? TryGetAdditionalPropertiesType(ObjectType @object)
-        => @object.AdditionalProperties is { } additional && !additional.Flags.HasFlag(TypePropertyFlags.FallbackProperty)
-            ? additional.TypeReference.Type
-            : null;
+    public static IEnumerable<SyntaxBase> GetAccessChain(SyntaxBase syntax)
+    {
+        SyntaxBase? current = syntax;
+        while (current is not null)
+        {
+            yield return current;
+            current = current switch
+            {
+                AccessExpressionSyntax access => access.BaseExpression,
+                NonNullAssertionSyntax nonNull => nonNull.BaseExpression,
+                ParenthesizedExpressionSyntax parenthesized => parenthesized.Expression,
+                _ => null,
+            };
+        }
+    }
 
     /// <summary>
     /// Finds the symbol at the root of a chain of property and index accesses, and the path the chain reads from
@@ -209,33 +219,25 @@ public static class SecureValueFlow
     public static (Symbol? Root, ImmutableArray<string> Path) GetAccessPath(SemanticModel model, SyntaxBase syntax)
     {
         var path = ImmutableArray.CreateBuilder<string>();
-        var current = syntax;
-        for (var depth = 0; depth < MaxDepth; depth++)
+        foreach (var current in GetAccessChain(syntax).Take(MaxDepth))
         {
             switch (current)
             {
                 case VariableAccessSyntax access:
                     path.Reverse();
                     return (model.GetSymbolInfo(access), path.ToImmutable());
-                case PropertyAccessSyntax propertyAccess:
-                    path.Add(propertyAccess.PropertyName.IdentifierName);
-                    current = propertyAccess.BaseExpression;
+                case AccessExpressionSyntax access when access.TryGetPropertyName() is { } name:
+                    path.Add(name);
                     break;
                 case ArrayAccessSyntax arrayAccess:
                     path.Add(arrayAccess.IndexExpression switch
                     {
                         IntegerLiteralSyntax integer when integer.Value <= int.MaxValue => FormatIndex((int)integer.Value),
-                        StringSyntax @string when @string.TryGetLiteralValue() is { } name => name,
                         var index when TypeHelper.SatisfiesCondition(model.GetTypeInfo(index), type => type is IntegerType or IntegerLiteralType) => AnyIndex,
                         _ => AnyMember,
                     });
-                    current = arrayAccess.BaseExpression;
                     break;
-                case NonNullAssertionSyntax nonNull:
-                    current = nonNull.BaseExpression;
-                    break;
-                case ParenthesizedExpressionSyntax parenthesized:
-                    current = parenthesized.Expression;
+                case NonNullAssertionSyntax or ParenthesizedExpressionSyntax:
                     break;
                 default:
                     return (null, []);
@@ -290,33 +292,7 @@ public static class SecureValueFlow
     /// <c>secureObjectParam.?key</c>. Members of a secure container are secure even when their own type is not.
     /// </summary>
     public static bool IsReadFromSecureValue(SemanticModel model, SyntaxBase syntax)
-    {
-        var current = syntax;
-        for (var depth = 0; depth < MaxDepth; depth++)
-        {
-            SyntaxBase? baseExpression = current switch
-            {
-                AccessExpressionSyntax access => access.BaseExpression,
-                NonNullAssertionSyntax nonNull => nonNull.BaseExpression,
-                ParenthesizedExpressionSyntax parenthesized => parenthesized.Expression,
-                _ => null,
-            };
-
-            if (baseExpression is null)
-            {
-                return false;
-            }
-
-            if (IsSecureType(GetEffectiveType(model, baseExpression)))
-            {
-                return true;
-            }
-
-            current = baseExpression;
-        }
-
-        return false;
-    }
+        => GetAccessChain(syntax).Skip(1).Take(MaxDepth).Any(baseExpression => IsSecureType(GetEffectiveType(model, baseExpression)));
 
     /// <summary>
     /// The type of an expression, recovering the item types of loop and lambda variables where the type checker
@@ -344,9 +320,9 @@ public static class SecureValueFlow
                 return TryGetEffectiveType(model, nonNull.BaseExpression, depth + 1);
             case VariableAccessSyntax access when model.GetSymbolInfo(access) is LocalVariableSymbol local:
                 return TryGetItemSource(model, local) is { } itemSource ? GetIteratedItemType(model, itemSource, depth + 1) : null;
-            case PropertyAccessSyntax propertyAccess:
-                return TryGetEffectiveType(model, propertyAccess.BaseExpression, depth + 1) is { } propertyBase
-                    ? GetMemberType(propertyBase, propertyAccess.PropertyName.IdentifierName)
+            case AccessExpressionSyntax access when access.TryGetPropertyName() is { } name:
+                return TryGetEffectiveType(model, access.BaseExpression, depth + 1) is { } propertyBase
+                    ? GetMemberType(propertyBase, name)
                     : null;
             case ArrayAccessSyntax arrayAccess:
                 if (TryGetEffectiveType(model, arrayAccess.BaseExpression, depth + 1) is not { } indexBase)
@@ -356,7 +332,6 @@ public static class SecureValueFlow
 
                 return arrayAccess.IndexExpression switch
                 {
-                    StringSyntax index when index.TryGetLiteralValue() is { } name => GetMemberType(indexBase, name),
                     IntegerLiteralSyntax integer when integer.Value <= int.MaxValue => GetItemType(indexBase, (int)integer.Value),
                     _ => GetItemType(indexBase),
                 };
@@ -424,6 +399,7 @@ public static class SecureValueFlow
 
     /// <summary>
     /// The type of a named member, combining the members of every non-null union member and discriminated variant.
+    /// Unlike type-checking a property read, this preserves non-collapsible unions and accepts write-only sinks.
     /// </summary>
     public static TypeSymbol GetMemberType(TypeSymbol type, string name) => type switch
     {
@@ -459,48 +435,9 @@ public static class SecureValueFlow
     /// Enumerates the paths within a type at which a value must be secure.
     /// </summary>
     public static IEnumerable<ImmutableArray<string>> FindSecurePaths(TypeSymbol type)
-        => FindSecurePaths(type, [], new(ReferenceEqualityComparer.Instance), 0)
+        => TypeHelper.FindPathsToSecureTypeComponentsAsSegments(type)
+            .Select(path => path.Select(segment => segment.StartsWith('.') ? segment[1..] : segment).ToImmutableArray())
             .DistinctBy(GetPathKey);
-
-    private static IEnumerable<ImmutableArray<string>> FindSecurePaths(TypeSymbol type, ImmutableArray<string> path, HashSet<TypeSymbol> visiting, int depth)
-    {
-        if (depth > MaxDepth || !visiting.Add(type))
-        {
-            yield break;
-        }
-
-        try
-        {
-            if (type.ValidationFlags.HasFlag(TypeSymbolValidationFlags.IsSecure))
-            {
-                yield return path;
-                yield break;
-            }
-
-            IEnumerable<ImmutableArray<string>> children = type switch
-            {
-                UnionType union => union.Members.SelectMany(member => FindSecurePaths(member.Type, path, visiting, depth + 1)),
-                DiscriminatedObjectType discriminated => discriminated.UnionMembersByKey.Values.SelectMany(variant => FindSecurePaths(variant, path, visiting, depth + 1)),
-                ObjectType @object => @object.Properties.Values
-                    .SelectMany(property => FindSecurePaths(property.TypeReference.Type, path.Add(property.Name), visiting, depth + 1))
-                    .Concat(@object.AdditionalProperties is { } additional
-                        ? FindSecurePaths(additional.TypeReference.Type, path.Add(AnyMember), visiting, depth + 1)
-                        : []),
-                TupleType tuple => tuple.Items.SelectMany((item, index) => FindSecurePaths(item.Type, path.Add(FormatIndex(index)), visiting, depth + 1)),
-                ArrayType array => FindSecurePaths(array.Item.Type, path.Add(AnyIndex), visiting, depth + 1),
-                _ => [],
-            };
-
-            foreach (var child in children)
-            {
-                yield return child;
-            }
-        }
-        finally
-        {
-            visiting.Remove(type);
-        }
-    }
 
     /// <summary>
     /// Whether every value of the given type is secure at the given path. A path is secure only if it is secure in
@@ -546,7 +483,7 @@ public static class SecureValueFlow
         {
             case DiscriminatedObjectType discriminated:
                 var applicable = discriminated.UnionMembersByKey.Values
-                    .Where(variant => head == AnyMember || variant.Properties.ContainsKey(head) || TryGetAdditionalPropertiesType(variant) is not null)
+                    .Where(variant => head == AnyMember || variant.Properties.ContainsKey(head) || variant.HasExplicitAdditionalPropertiesType)
                     .ToArray();
                 return applicable.Length > 0
                     ? applicable.All(variant => IsSecureAtPath(variant, path, absentIsSecure, depth + 1))
@@ -554,8 +491,8 @@ public static class SecureValueFlow
 
             case ObjectType @object when head == AnyMember:
                 // Any member can supply a dictionary entry, so declared properties must be secure too.
-                return (TryGetAdditionalPropertiesType(@object) is { } anyAdditional
-                        ? IsSecureAtPath(anyAdditional, tail, absentIsSecure, depth + 1)
+                return (@object is { HasExplicitAdditionalPropertiesType: true, AdditionalProperties: { } anyAdditional }
+                        ? IsSecureAtPath(anyAdditional.TypeReference.Type, tail, absentIsSecure, depth + 1)
                         : absentIsSecure) &&
                     @object.Properties.Values.All(property => IsSecureAtPath(property.TypeReference.Type, tail, absentIsSecure, depth + 1));
 
@@ -563,8 +500,8 @@ public static class SecureValueFlow
                 return IsSecureAtPath(property.TypeReference.Type, tail, absentIsSecure, depth + 1);
 
             case ObjectType @object:
-                return TryGetAdditionalPropertiesType(@object) is { } additional
-                    ? IsSecureAtPath(additional, tail, absentIsSecure, depth + 1)
+                return @object is { HasExplicitAdditionalPropertiesType: true, AdditionalProperties: { } additional }
+                    ? IsSecureAtPath(additional.TypeReference.Type, tail, absentIsSecure, depth + 1)
                     : absentIsSecure;
 
             case TupleType tuple when head == AnyIndex:
