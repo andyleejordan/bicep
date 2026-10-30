@@ -57,7 +57,7 @@ public sealed class NoSecureValuesInInsecureInputsRule : LinterRuleBase
                 var findings = SecureValueFlow.GetInputSlots(model, property.Value, name, sinkType)
                     .Where(slot => slot.SinkType is not ErrorType && !(slot.Prefix.IsEmpty && SecureValueFlow.IsSecureType(slot.SinkType)))
                     .SelectMany(slot => analyzer.GetSecretSources(slot.Value)
-                        .Where(source => !IsRejectedByCompiler(model, source.Syntax))
+                        .Where(source => !IsModuleSecureParameterOnlyFunction(model, source.Syntax))
                         .Where(source => !SecureValueFlow.IsOverwritten(source.Path, slot.OverriddenProperties))
                         .Select(source => (source, path: slot.Prefix.AddRange(source.Path)))
                         .Where(x => !SecureValueFlow.IsSecureAtPath(slot.SinkType, x.path))
@@ -76,7 +76,7 @@ public sealed class NoSecureValuesInInsecureInputsRule : LinterRuleBase
     /// Functions like <c>getSecret()</c> can only be assigned directly to a secure module parameter, so the compiler
     /// already reports an error (BCP180) for any use of them that this rule would flag.
     /// </summary>
-    private static bool IsRejectedByCompiler(SemanticModel model, SyntaxBase syntax)
+    private static bool IsModuleSecureParameterOnlyFunction(SemanticModel model, SyntaxBase syntax)
         => syntax is FunctionCallSyntaxBase
             && model.GetSymbolInfo(syntax) is FunctionSymbol function
             && function.FunctionFlags.HasFlag(FunctionFlags.ModuleSecureParameterOnly);

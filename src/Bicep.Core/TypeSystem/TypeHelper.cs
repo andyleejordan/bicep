@@ -799,7 +799,7 @@ namespace Bicep.Core.TypeSystem
         /// Finds the outermost secure components, including discriminated variants. Property segments include
         /// their leading dot, so a property named <c>'[0]'</c> remains distinct from an array index.
         /// </summary>
-        public static IEnumerable<ImmutableArray<string>> FindPathsToSecureTypeComponentsAsSegments(TypeSymbol type)
+        public static IEnumerable<ImmutableArray<string>> FindPathsToOutermostSecureTypeComponents(TypeSymbol type)
             => FindPathsToSecureTypeComponents(
                 type,
                 hasTrailingAccessExpressions: false,

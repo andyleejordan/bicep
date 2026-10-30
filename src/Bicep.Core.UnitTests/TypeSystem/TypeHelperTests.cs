@@ -29,7 +29,7 @@ public class TypeHelperTests
         ]);
 
         TypeHelper.FindPathsToSecureTypeComponents(type).Should().Equal(".[0]", ".a.b", ".a.b");
-        TypeHelper.FindPathsToSecureTypeComponentsAsSegments(type).Should().SatisfyRespectively(
+        TypeHelper.FindPathsToOutermostSecureTypeComponents(type).Should().SatisfyRespectively(
             path => path.Should().Equal(".[0]"),
             path => path.Should().Equal(".a", ".b"),
             path => path.Should().Equal(".a.b"));
@@ -46,7 +46,7 @@ public class TypeHelperTests
         ], new TypeProperty(LanguageConstants.SecureString));
 
         TypeHelper.FindPathsToSecureTypeComponents(type).Should().Equal(".*", ".array[*]", ".nullable", ".tuple[1]");
-        TypeHelper.FindPathsToSecureTypeComponentsAsSegments(type).Should().SatisfyRespectively(
+        TypeHelper.FindPathsToOutermostSecureTypeComponents(type).Should().SatisfyRespectively(
             path => path.Should().Equal(".*"),
             path => path.Should().Equal(".array", "[*]"),
             path => path.Should().Equal(".nullable"),
@@ -54,13 +54,13 @@ public class TypeHelperTests
     }
 
     [TestMethod]
-    public void Segmented_secure_type_paths_stop_at_secure_containers_without_changing_string_paths()
+    public void Outermost_secure_type_paths_stop_at_secure_containers_without_changing_string_paths()
     {
         var type = new ObjectType("secureContainer", TypeSymbolValidationFlags.IsSecure,
             [new("secret", LanguageConstants.SecureString)]);
 
         TypeHelper.FindPathsToSecureTypeComponents(type).Should().Equal("", ".secret");
-        TypeHelper.FindPathsToSecureTypeComponentsAsSegments(type).Should().ContainSingle()
+        TypeHelper.FindPathsToOutermostSecureTypeComponents(type).Should().ContainSingle()
             .Which.Should().BeEmpty();
     }
 
@@ -76,7 +76,7 @@ public class TypeHelperTests
     }
 
     [TestMethod]
-    public void Segmented_secure_type_paths_visit_discriminated_variants_without_changing_string_paths()
+    public void Outermost_secure_type_paths_visit_discriminated_variants_without_changing_string_paths()
     {
         var type = new DiscriminatedObjectType("variants", default, "kind",
         [
@@ -92,7 +92,7 @@ public class TypeHelperTests
             ]),
         ]);
 
-        TypeHelper.FindPathsToSecureTypeComponentsAsSegments(type).Should().ContainSingle()
+        TypeHelper.FindPathsToOutermostSecureTypeComponents(type).Should().ContainSingle()
             .Which.Should().Equal(".secret");
         TypeHelper.FindPathsToSecureTypeComponents(type).Should().BeEmpty();
         TypeHelper.IsOrContainsSecureType(type).Should().BeFalse();
@@ -110,7 +110,7 @@ public class TypeHelperTests
         var type = new ObjectType("root", default, [new("first", recursive), new("second", recursive)]);
 
         TypeHelper.FindPathsToSecureTypeComponents(type).Should().Equal(".first.secret", ".second.secret");
-        TypeHelper.FindPathsToSecureTypeComponentsAsSegments(type).Should().SatisfyRespectively(
+        TypeHelper.FindPathsToOutermostSecureTypeComponents(type).Should().SatisfyRespectively(
             path => path.Should().Equal(".first", ".secret"),
             path => path.Should().Equal(".second", ".secret"));
     }
@@ -118,7 +118,7 @@ public class TypeHelperTests
     [TestMethod]
     [DataRow(64, 1)]
     [DataRow(65, 0)]
-    public void Segmented_secure_type_paths_retain_the_flow_depth_limit(int depth, int expectedCount)
+    public void Outermost_secure_type_paths_retain_the_flow_depth_limit(int depth, int expectedCount)
     {
         TypeSymbol type = LanguageConstants.SecureString;
         for (var i = 0; i < depth; i++)
@@ -126,7 +126,7 @@ public class TypeHelperTests
             type = new ObjectType($"level{i}", default, [new("nested", type)]);
         }
 
-        TypeHelper.FindPathsToSecureTypeComponentsAsSegments(type).Should().HaveCount(expectedCount);
+        TypeHelper.FindPathsToOutermostSecureTypeComponents(type).Should().HaveCount(expectedCount);
         TypeHelper.FindPathsToSecureTypeComponents(type).Should().ContainSingle();
     }
 

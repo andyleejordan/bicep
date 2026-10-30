@@ -435,7 +435,7 @@ public static class SecureValueFlow
     /// Enumerates the paths within a type at which a value must be secure.
     /// </summary>
     public static IEnumerable<ImmutableArray<string>> FindSecurePaths(TypeSymbol type)
-        => TypeHelper.FindPathsToSecureTypeComponentsAsSegments(type)
+        => TypeHelper.FindPathsToOutermostSecureTypeComponents(type)
             .Select(path => path.Select(segment => segment.StartsWith('.') ? segment[1..] : segment).ToImmutableArray())
             .DistinctBy(GetPathKey);
 
