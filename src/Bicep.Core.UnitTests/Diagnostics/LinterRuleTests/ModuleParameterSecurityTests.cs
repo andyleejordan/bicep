@@ -194,6 +194,133 @@ module children 'child.bicep' = [for (logger, index) in (loggers ?? []): {
 }]
 """, "@secure()\nparam credentials resourceInput<'Microsoft.ApiManagement/service/workspaces/loggers@2024-05-01'>.properties.credentials?", "credentials");
 
+    private const string SqlSecretsExport = """
+SECURE
+param administratorLoginPassword string
+param secretsExportConfiguration {
+  sqlAdminPasswordSecretName: string?
+}
+
+module export 'child.bicep' = {
+  name: 'export'
+  params: {
+    secretsToSet: union(
+      [],
+      contains(secretsExportConfiguration, 'sqlAdminPasswordSecretName')
+        ? [
+            {
+              name: secretsExportConfiguration.?sqlAdminPasswordSecretName
+              value: administratorLoginPassword
+            }
+          ]
+        : []
+    )
+  }
+}
+""";
+
+    // Not in AVM: its export child declares a secure value member.
+    [TestMethod]
+    public void Sql_secret_export_union_is_a_secure_source_for_a_plain_child()
+        => AssertFlow(SqlSecretsExport.Replace("SECURE", "@secure()"), "param secretsToSet array", [], [LeakWarning("secretsToSet[*].value", "administratorLoginPassword")]);
+
+    [TestMethod]
+    public void Sql_secret_export_union_to_a_secure_child_member_needs_only_a_secure_source()
+        => AssertHardening(SqlSecretsExport, """
+param secretsToSet {
+  name: string
+  @secure()
+  value: string
+}[]
+""", "secretsToSet[*].value");
+
+    private const string ApimPortalSettings = """
+@discriminator('name')
+type portalSettingsType = signInPropertiesType | signUpPropertiesType | delegationPropertiesType
+
+type signInPropertiesType = {
+  name: 'signin'
+  properties: {
+    enabled: bool
+  }
+}
+type signUpPropertiesType = {
+  name: 'signup'
+  properties: {
+    enabled: bool?
+    termsOfService: {
+      consentRequired: bool?
+      enabled: bool?
+      text: string?
+    }?
+  }
+}
+type delegationPropertiesType = {
+  name: 'delegation'
+  properties: {
+    subscriptions: {
+      enabled: bool
+    }?
+    url: string?
+    userRegistration: {
+      enabled: bool
+    }?
+    @secure()
+    validationKey: string?
+  }
+}
+param portalsettings portalSettingsType[]?
+
+module children 'child.bicep' = [for (portalsetting, index) in (portalsettings ?? []): {
+  name: 'portal-${index}'
+  params: {
+    properties: portalsetting.properties
+  }
+}]
+""";
+
+    private const string PortalSettingPropertiesChild = """
+param properties {
+  enabled: bool?
+  termsOfService: {
+    consentRequired: bool?
+    enabled: bool?
+    text: string?
+  }?
+  subscriptions: {
+    enabled: bool?
+  }?
+  url: string?
+  userRegistration: {
+    enabled: bool?
+  }?
+  @secure()
+  validationKey: string?
+}
+""";
+
+    [TestMethod]
+    public void Hardening_apim_portal_child_properties_type_removes_warning()
+    {
+        AssertFlow(ApimPortalSettings, "param properties resourceInput<'Microsoft.ApiManagement/service/portalsettings@2024-05-01'>.properties",
+            [], [LeakWarning("properties.validationKey", "portalsetting.properties.validationKey")]);
+        AssertFlow(ApimPortalSettings, PortalSettingPropertiesChild, [], []);
+    }
+
+    // Not in AVM: its sign-in variant is closed.
+    [TestMethod]
+    public void Apim_portal_variant_open_to_other_properties_may_supply_a_plain_validation_key()
+        => AssertFlow(ApimPortalSettings.Replace("""
+  properties: {
+    enabled: bool
+  }
+""", """
+  properties: {
+    enabled: bool
+    *: string
+  }
+"""), PortalSettingPropertiesChild, [InputWarning("properties.validationKey")], []);
+
     // compute/virtual-machine and compute/virtual-machine-scale-set use the same custom script binding.
     [TestMethod]
     public void Custom_script_conditional_spreads_keep_secure_ancestor()
@@ -297,6 +424,226 @@ module child 'child.bicep' = {
 }
 """, "param settings object?", [], []);
 
+    private const string VmExtensionChild = """
+param name string
+param typeHandlerVersion string
+param autoUpgradeMinorVersion bool
+param enableAutomaticUpgrade bool
+param settings object?
+@secure()
+param protectedSettings object?
+param supressFailures bool = false
+param tags object?
+""";
+
+    [TestMethod]
+    public void Whole_secure_vm_domain_join_object_marks_all_forwarded_members_sensitive()
+        => AssertFlow("""
+@secure()
+param extensionDomainJoinPassword string = ''
+@secure()
+param extensionDomainJoinConfig object = {}
+param tags object?
+
+module vm_domainJoinExtension 'child.bicep' = if (contains(extensionDomainJoinConfig, 'enabled') && extensionDomainJoinConfig.enabled) {
+  name: 'domain-join'
+  params: {
+    name: extensionDomainJoinConfig.?name ?? 'DomainJoin'
+    typeHandlerVersion: extensionDomainJoinConfig.?typeHandlerVersion ?? '1.3'
+    autoUpgradeMinorVersion: extensionDomainJoinConfig.?autoUpgradeMinorVersion ?? true
+    enableAutomaticUpgrade: extensionDomainJoinConfig.?enableAutomaticUpgrade ?? false
+    settings: extensionDomainJoinConfig.?settings ?? {
+      Name: extensionDomainJoinConfig.?domainName
+      OUPath: extensionDomainJoinConfig.?ouPath
+      User: extensionDomainJoinConfig.?user
+      Restart: extensionDomainJoinConfig.?restart
+      Options: extensionDomainJoinConfig.?options
+    }
+    supressFailures: extensionDomainJoinConfig.?supressFailures ?? false
+    tags: extensionDomainJoinConfig.?tags ?? tags
+    protectedSettings: {
+      Password: extensionDomainJoinPassword
+    }
+  }
+}
+""", VmExtensionChild, [],
+            [
+                LeakWarning("name", "extensionDomainJoinConfig.?name"),
+                LeakWarning("typeHandlerVersion", "extensionDomainJoinConfig.?typeHandlerVersion"),
+                LeakWarning("autoUpgradeMinorVersion", "extensionDomainJoinConfig.?autoUpgradeMinorVersion"),
+                LeakWarning("enableAutomaticUpgrade", "extensionDomainJoinConfig.?enableAutomaticUpgrade"),
+                LeakWarning("settings", "extensionDomainJoinConfig.?settings"),
+                LeakWarning("settings.Name", "extensionDomainJoinConfig.?domainName"),
+                LeakWarning("settings.OUPath", "extensionDomainJoinConfig.?ouPath"),
+                LeakWarning("settings.User", "extensionDomainJoinConfig.?user"),
+                LeakWarning("settings.Restart", "extensionDomainJoinConfig.?restart"),
+                LeakWarning("settings.Options", "extensionDomainJoinConfig.?options"),
+                LeakWarning("supressFailures", "extensionDomainJoinConfig.?supressFailures"),
+                LeakWarning("tags", "extensionDomainJoinConfig.?tags"),
+            ]);
+
+    [TestMethod]
+    public void Whole_secure_vmss_domain_join_object_marks_all_forwarded_members_sensitive()
+        => AssertFlow("""
+@secure()
+param extensionDomainJoinPassword string = ''
+@secure()
+param extensionDomainJoinConfig object = {
+  enabled: false
+}
+
+module vmss_domainJoinExtension 'child.bicep' = if (extensionDomainJoinConfig.enabled) {
+  name: 'domain-join'
+  params: {
+    name: 'DomainJoin'
+    typeHandlerVersion: extensionDomainJoinConfig.?typeHandlerVersion ?? '1.3'
+    autoUpgradeMinorVersion: extensionDomainJoinConfig.?autoUpgradeMinorVersion ?? true
+    enableAutomaticUpgrade: extensionDomainJoinConfig.?enableAutomaticUpgrade ?? false
+    settings: extensionDomainJoinConfig.settings
+    protectedSettings: {
+      Password: extensionDomainJoinPassword
+    }
+    provisionAfterExtensions: extensionDomainJoinConfig.?provisionAfterExtensions
+  }
+}
+""", """
+param name string
+param typeHandlerVersion string
+param autoUpgradeMinorVersion bool
+param enableAutomaticUpgrade bool
+param settings object?
+@secure()
+param protectedSettings object?
+param provisionAfterExtensions string[]?
+""", [],
+            [
+                LeakWarning("typeHandlerVersion", "extensionDomainJoinConfig.?typeHandlerVersion"),
+                LeakWarning("autoUpgradeMinorVersion", "extensionDomainJoinConfig.?autoUpgradeMinorVersion"),
+                LeakWarning("enableAutomaticUpgrade", "extensionDomainJoinConfig.?enableAutomaticUpgrade"),
+                LeakWarning("settings", "extensionDomainJoinConfig.settings"),
+                LeakWarning("provisionAfterExtensions", "extensionDomainJoinConfig.?provisionAfterExtensions"),
+            ]);
+
+    [TestMethod]
+    public void Whole_secure_host_pool_object_marks_non_token_members_sensitive()
+        => AssertFlow("""
+@secure()
+param extensionHostPoolRegistration object = {
+  enabled: false
+}
+param tags object?
+
+module vm_hostPoolRegistrationExtension 'child.bicep' = if (extensionHostPoolRegistration.enabled) {
+  name: 'host-pool'
+  params: {
+    name: extensionHostPoolRegistration.?name ?? 'HostPoolRegistration'
+    typeHandlerVersion: extensionHostPoolRegistration.?typeHandlerVersion ?? '2.77'
+    autoUpgradeMinorVersion: extensionHostPoolRegistration.?autoUpgradeMinorVersion ?? true
+    enableAutomaticUpgrade: extensionHostPoolRegistration.?enableAutomaticUpgrade ?? false
+    settings: {
+      modulesUrl: extensionHostPoolRegistration.modulesUrl
+      configurationFunction: extensionHostPoolRegistration.configurationFunction
+      properties: {
+        hostPoolName: extensionHostPoolRegistration.hostPoolName
+        aadJoin: true
+      }
+    }
+    protectedSettings: {
+      properties: {
+        registrationInfoToken: extensionHostPoolRegistration.registrationInfoToken
+      }
+    }
+    supressFailures: extensionHostPoolRegistration.?supressFailures ?? false
+    tags: extensionHostPoolRegistration.?tags ?? tags
+  }
+}
+""", VmExtensionChild, [],
+            [
+                LeakWarning("name", "extensionHostPoolRegistration.?name"),
+                LeakWarning("typeHandlerVersion", "extensionHostPoolRegistration.?typeHandlerVersion"),
+                LeakWarning("autoUpgradeMinorVersion", "extensionHostPoolRegistration.?autoUpgradeMinorVersion"),
+                LeakWarning("enableAutomaticUpgrade", "extensionHostPoolRegistration.?enableAutomaticUpgrade"),
+                LeakWarning("settings.modulesUrl", "extensionHostPoolRegistration.modulesUrl"),
+                LeakWarning("settings.configurationFunction", "extensionHostPoolRegistration.configurationFunction"),
+                LeakWarning("settings.properties.hostPoolName", "extensionHostPoolRegistration.hostPoolName"),
+                LeakWarning("supressFailures", "extensionHostPoolRegistration.?supressFailures"),
+                LeakWarning("tags", "extensionHostPoolRegistration.?tags"),
+            ]);
+
+    // Not in AVM: a synthetic resourceInput child.
+    [TestMethod]
+    [Ignore("Deferred: resourceInput sensitivity is not proof of emitted module parameter protection.")]
+    public void Resource_input_os_profile_should_not_hide_a_plain_child_parameter()
+        => AssertFlow("""
+@secure()
+param password string
+
+module child 'child.bicep' = {
+  name: 'child'
+  params: {
+    osProfile: {
+      adminPassword: password
+    }
+  }
+}
+""", "param osProfile resourceInput<'Microsoft.Compute/virtualMachines@2024-07-01'>.properties.osProfile",
+            [], [LeakWarning("osProfile.adminPassword", "password")]);
+
+    [TestMethod]
+    [Ignore("Deferred: compiled resourceInput items inherit sensitivity without ARM parameter protection.")]
+    public void Aks_flux_array_should_warn_for_unprotected_resource_input_child()
+        => AssertLinterRuleDiagnostics(NoSecureValuesInInsecureInputsRule.Code, """
+type extensionType = {
+  fluxConfigurations: resourceInput<'Microsoft.KubernetesConfiguration/fluxConfigurations@2025-04-01'>.properties[]?
+}
+param fluxExtension extensionType
+
+module extension 'child.json' = {
+  name: 'extension'
+  params: {
+    fluxConfigurations: fluxExtension.?fluxConfigurations
+  }
+}
+""",
+            [
+                .. new[]
+                {
+                    "azureBlob.accountKey",
+                    "azureBlob.sasToken",
+                    "azureBlob.servicePrincipal.clientCertificate",
+                    "azureBlob.servicePrincipal.clientCertificatePassword",
+                    "azureBlob.servicePrincipal.clientSecret",
+                    "ociRepository.tlsConfig.caCertificate",
+                    "ociRepository.tlsConfig.clientCertificate",
+                    "ociRepository.tlsConfig.privateKey",
+                }.Select(path => LeakWarning($"fluxConfigurations[*].{path}", $"fluxExtension.?fluxConfigurations[*].{path}")),
+            ],
+            new Options(IncludePosition: IncludePosition.None, AdditionalFiles:
+            [
+                ("child.json", """
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "fluxConfigurations": {
+      "type": "array",
+      "nullable": true,
+      "items": {
+        "type": "object",
+        "metadata": {
+          "__bicep_resource_derived_type!": {
+            "source": "Microsoft.KubernetesConfiguration/fluxConfigurations@2025-04-01#properties/properties"
+          }
+        }
+      }
+    }
+  },
+  "resources": {}
+}
+"""),
+            ]));
+
     private static void AssertHardening(string source, string child, string input, string childPath = "child.bicep")
     {
         AssertFlow(source.Replace("SECURE", ""), child, [InputWarning(input)], [], childPath);
@@ -307,8 +654,12 @@ module child 'child.bicep' = {
     {
         var options = new Options(IncludePosition: IncludePosition.None, AdditionalFiles: [(childPath, child)]);
         AssertLinterRuleDiagnostics(UseSecureValueForSecureInputsRule.Code, source, inputWarnings, options);
+        AssertLinterRuleDiagnostics(NoSecureValuesInInsecureInputsRule.Code, source, leakWarnings, options);
     }
 
     private static string InputWarning(string input)
         => $"Property '{input}' expects a secure value, but the value provided may not be secure.";
+
+    private static string LeakWarning(string input, string source)
+        => $"Module parameter '{input}' is not secure, but is assigned secure value '{source}'. The value will be visible in the module deployment's inputs.";
 }
