@@ -127,10 +127,10 @@ public sealed class UseSecureValueForSecureInputsRule : LinterRuleBase
                     var memberPath = path.IsEmpty ? path : path.RemoveAt(0);
                     return SecureValueFlow.GetObjectChildren(model, @object).All(entry => entry.Child switch
                     {
-                        _ when key is not null && entry.OverriddenProperties.Contains(key) => true,
+                        _ when SecureValueFlow.IsOverwritten(path, entry.OverriddenProperties) => true,
                         ObjectPropertySyntax property when property.TryGetKeyText() is { } name && entry.OverriddenProperties.Contains(name) => true,
                         ObjectPropertySyntax property when key is null => IsSecureAtPath(container, property.Value, path),
-                        ObjectPropertySyntax property when property.TryGetKeyText() is not { } name || SecureValueFlow.SegmentsMatch(name, key)
+                        ObjectPropertySyntax property when property.TryGetKeyText() is not { } name || SecureValueFlow.SegmentsMatch(SecureValueFlow.FormatProperty(name), key)
                             => IsSecureAtPath(container, property.Value, memberPath),
                         ObjectPropertySyntax => true,
                         SpreadExpressionSyntax spread when key is null => IsSecureObjectRemainder(container, spread.Expression, entry.OverriddenProperties),
@@ -145,12 +145,12 @@ public sealed class UseSecureValueForSecureInputsRule : LinterRuleBase
                     return IsSecureAtPath(container, @for.Body, path.IsEmpty ? path : path.RemoveAt(0));
             }
 
-            // A union or concatenation keeps what each argument supplies within it. The whole result is still checked
-            // as one computed value.
+            // Check every argument that can still supply this path after combination.
             if (!path.IsEmpty && SecureValueFlow.TryGetCombinedValues(model, leaf) is { } combined)
             {
                 var combinedPath = SecureValueFlow.ForgetPosition(path);
-                return combined.All(value => IsSecureAtPath(container, value, combinedPath));
+                return combined.Where((_, index) => !SecureValueFlow.IsOverwrittenByObjectUnion(model, leaf, index, combinedPath))
+                    .All(value => IsSecureAtPath(container, value, combinedPath));
             }
 
             // Look through a variable at the values it was computed from. Its inferred type can be secure even when
@@ -186,7 +186,7 @@ public sealed class UseSecureValueForSecureInputsRule : LinterRuleBase
                     ObjectType @object when !overridden.IsEmpty && !SecureValueFlow.IsSecureType(@object)
                         => @object.Properties.Values
                             .Where(property => !overridden.Contains(property.Name))
-                            .All(property => IsSecureAtPath(container, leaf, [property.Name])) &&
+                            .All(property => IsSecureAtPath(container, leaf, [SecureValueFlow.FormatProperty(property.Name)])) &&
                             (!@object.HasExplicitAdditionalPropertiesType || IsSecureAtPath(container, leaf, [SecureValueFlow.AnyMember])),
                     _ => IsSecureAtPath(container, leaf, []),
                 }));

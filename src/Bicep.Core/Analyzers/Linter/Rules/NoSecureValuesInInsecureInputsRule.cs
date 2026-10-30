@@ -116,7 +116,8 @@ public sealed class NoSecureValuesInInsecureInputsRule : LinterRuleBase
                 FunctionCallSyntaxBase functionCall when TryGetSystemFunctionArgument(functionCall, "filter", 0) is { } filtered
                     => AnyPosition(GetSecretSources(filtered)),
                 _ when SecureValueFlow.TryGetCombinedValues(model, syntax) is { } combined
-                    => combined.SelectMany(value => AnyPosition(GetSecretSources(value))),
+                    => combined.SelectMany((value, index) => AnyPosition(GetSecretSources(value)
+                        .Where(source => !SecureValueFlow.IsOverwrittenByObjectUnion(model, syntax, index, source.Path)))),
                 _ when SecureValueFlow.GetAccessChain(syntax).Last() is VariableAccessSyntax => GetDirectReferenceSources(syntax),
                 _ => GetExpressionSources(syntax),
             };
@@ -125,7 +126,7 @@ public sealed class NoSecureValuesInInsecureInputsRule : LinterRuleBase
         }
 
         private IEnumerable<SecretSource> GetPropertySources(ObjectPropertySyntax property)
-            => Prefix(property.TryGetKeyText() ?? SecureValueFlow.AnyMember, GetSecretSources(property.Value))
+            => Prefix(property.TryGetKeyText() is { } name ? SecureValueFlow.FormatProperty(name) : SecureValueFlow.AnyMember, GetSecretSources(property.Value))
                 .Concat(property.Key is StringSyntax { Expressions.Length: > 0 } key
                     ? GetSecretSources(key).Select(source => source with { Path = [], IsObjectKey = true })
                     : []);

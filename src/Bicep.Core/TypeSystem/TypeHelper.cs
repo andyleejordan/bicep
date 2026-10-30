@@ -793,11 +793,11 @@ namespace Bicep.Core.TypeSystem
                 stopAtSecureType: false,
                 path: [],
                 currentlyProcessing: new(ReferenceEqualityComparer.Instance),
-                remainingDepth: int.MaxValue).Select(path => string.Concat(path));
+                remainingDepth: int.MaxValue).Select(path => string.Concat(path.Select(segment => segment == "*" ? ".*" : segment)));
 
         /// <summary>
         /// Finds the outermost secure components, including discriminated variants. Property segments include
-        /// their leading dot, so a property named <c>'[0]'</c> remains distinct from an array index.
+        /// their leading dot, so literal names remain distinct from array indices and the <c>*</c> dictionary wildcard.
         /// </summary>
         public static IEnumerable<ImmutableArray<string>> FindPathsToOutermostSecureTypeComponents(TypeSymbol type)
             => FindPathsToSecureTypeComponents(
@@ -845,7 +845,7 @@ namespace Bicep.Core.TypeSystem
                     DiscriminatedObjectType discriminated when includeDiscriminatedObjects
                         => discriminated.UnionMembersByKey.Values.Select(variant => ((TypeSymbol)variant, path)),
                     ObjectType @object => (@object.AdditionalProperties is { } additional
-                            ? new[] { (additional.TypeReference.Type, path.Add(".*")) }
+                            ? new[] { (additional.TypeReference.Type, path.Add("*")) }
                             : [])
                         .Concat(@object.Properties.Values.Select(property => (property.TypeReference.Type, path.Add($".{property.Name}")))),
                     TupleType tuple => tuple.Items.Select((item, index) => (item.Type, path.Add($"[{index.ToString(CultureInfo.InvariantCulture)}]"))),

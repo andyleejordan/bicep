@@ -632,4 +632,115 @@ module name 'child.bicep' = {
 }
 """,
             Message("plainArr[*]", "secure value 'parentSecret'"));
+
+    [TestMethod]
+    [DataRow("*")]
+    [DataRow("[0]")]
+    [DataRow("[*]")]
+    [DataRow("a.b")]
+    [DataRow("")]
+    public void Literal_property_names_do_not_taint_public_siblings(string name)
+        => CompileAndTest($$"""
+var config = {
+  '{{name}}': 'prefix-${parentSecret}'
+  public: 'public'
+}
+
+module child 'child.bicep' = {
+  params: {
+    plain: config.public
+    plainArr: [config['{{name}}']]
+  }
+}
+""",
+            Message("plainArr[0]", "secure value 'parentSecret'"));
+
+    [TestMethod]
+    public void Secure_properties_with_path_punctuation_can_be_forwarded_to_matching_inputs()
+    {
+        const string declarations = """
+type credentials = {
+  @secure()
+  '*': string
+  @secure()
+  '[0]': string
+  public: string
+}
+param value credentials
+""";
+        AssertLinterRuleDiagnostics(NoSecureValuesInInsecureInputsRule.Code, declarations + """
+
+module child 'child.bicep' = {
+  params: {
+    value: value
+  }
+}
+""", [], new Options(AdditionalFiles: [("child.bicep", declarations)]));
+    }
+
+    [TestMethod]
+    public void Object_union_only_reports_secret_members_that_survive()
+        => CompileAndTest("""
+module child 'child.bicep' = {
+  params: {
+    plainObj: union({
+      password: parentSecret
+      nested: {
+        retained: parentSecret
+        replaced: parentSecret
+      }
+      items: [parentSecret]
+    }, {
+      password: 'public'
+      nested: {
+        replaced: 'public'
+      }
+      items: []
+    })
+  }
+}
+""",
+            Message("plainObj.nested.retained", "secure value 'parentSecret'"));
+
+    [TestMethod]
+    public void Object_union_keeps_secrets_when_replacement_is_not_proven()
+        => CompileAndTest("""
+param optional { password: string? }
+param unknown object
+
+module child 'child.bicep' = {
+  params: {
+    plainObj: union({ password: parentSecret }, optional)
+    plainArr: [
+      union({ password: parentSecret }, unknown)
+      union({ password: parentSecret }, empty(parentPlain) ? { password: 'public' } : {})
+      union({ settings: parentObj }, { settings: { public: 'public' } })
+      union({ password: 'public' }, { password: parentSecret })
+    ]
+  }
+}
+""",
+            Message("plainObj.password", "secure value 'parentSecret'"),
+            Message("plainArr[0].password", "secure value 'parentSecret'"),
+            Message("plainArr[1].password", "secure value 'parentSecret'"),
+            Message("plainArr[2].settings", "secure value 'parentObj'"),
+            Message("plainArr[3].password", "secure value 'parentSecret'"));
+
+    [TestMethod]
+    public void Array_union_and_concat_do_not_overwrite_earlier_secrets()
+        => CompileAndTest("""
+module unioned 'child.bicep' = {
+  params: {
+    plainArr: union([parentSecret], ['public'])
+  }
+}
+
+module concatenated 'child.bicep' = {
+  params: {
+    plainArr: concat([parentSecret], ['public'])
+  }
+}
+""",
+            Message("plainArr[*]", "secure value 'parentSecret'"),
+            Message("plainArr[*]", "secure value 'parentSecret'"));
 }

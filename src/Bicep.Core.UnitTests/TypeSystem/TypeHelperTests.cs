@@ -47,10 +47,22 @@ public class TypeHelperTests
 
         TypeHelper.FindPathsToSecureTypeComponents(type).Should().Equal(".*", ".array[*]", ".nullable", ".tuple[1]");
         TypeHelper.FindPathsToOutermostSecureTypeComponents(type).Should().SatisfyRespectively(
-            path => path.Should().Equal(".*"),
+            path => path.Should().Equal("*"),
             path => path.Should().Equal(".array", "[*]"),
             path => path.Should().Equal(".nullable"),
             path => path.Should().Equal(".tuple", "[1]"));
+    }
+
+    [TestMethod]
+    public void Outermost_secure_paths_distinguish_literal_stars_from_dictionary_entries()
+    {
+        var type = new ObjectType("paths", default,
+            [new("*", LanguageConstants.SecureString)], new TypeProperty(LanguageConstants.SecureString));
+
+        TypeHelper.FindPathsToSecureTypeComponents(type).Should().Equal(".*", ".*");
+        TypeHelper.FindPathsToOutermostSecureTypeComponents(type).Should().SatisfyRespectively(
+            path => path.Should().Equal("*"),
+            path => path.Should().Equal(".*"));
     }
 
     [TestMethod]

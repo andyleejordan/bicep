@@ -15,7 +15,7 @@ namespace Bicep.Core.Analyzers.Linter.Common;
 /// Helpers for following secure values from an expression to the input it is assigned to.
 /// </summary>
 /// <remarks>
-/// Paths are sequences of segments: a property name, <see cref="AnyMember"/> for any member, <see cref="AnyIndex"/>
+/// Paths are sequences of segments: a dot-prefixed property name, <see cref="AnyMember"/> for any member, <see cref="AnyIndex"/>
 /// for any array element, or <c>[n]</c> for a known position.
 /// </remarks>
 public static class SecureValueFlow
@@ -65,7 +65,7 @@ public static class SecureValueFlow
     }
 
     public static bool IsOverwritten(ImmutableArray<string> path, ImmutableHashSet<string>? overridden)
-        => !path.IsEmpty && overridden?.Contains(path[0]) == true;
+        => !path.IsEmpty && TryGetPropertyName(path[0]) is { } name && overridden?.Contains(name) == true;
 
     /// <summary>
     /// Walks object, array, and loop literals assigned to an input, pairing each value inside them with the type
@@ -175,9 +175,7 @@ public static class SecureValueFlow
     };
 
     /// <summary>
-    /// The arguments of a <c>union</c> or <c>concat</c> call. The result keeps every property and array item of its
-    /// arguments, but array items can move, so a path into an argument should go through
-    /// <see cref="ForgetPosition"/>.
+    /// The arguments of a <c>union</c> or <c>concat</c> call. Array items can move; object union can replace values.
     /// </summary>
     public static IEnumerable<SyntaxBase>? TryGetCombinedValues(SemanticModel model, SyntaxBase syntax)
         => syntax is FunctionCallSyntaxBase functionCall &&
@@ -186,6 +184,26 @@ public static class SecureValueFlow
             SemanticModelHelper.TryGetFunctionInNamespace(model, SystemNamespaceType.BuiltInName, functionCall) is not null
             ? functionCall.Arguments.Select(argument => argument.Expression)
             : null;
+
+    public static bool IsOverwrittenByObjectUnion(SemanticModel model, SyntaxBase syntax, int argumentIndex, ImmutableArray<string> path)
+        => syntax is FunctionCallSyntaxBase functionCall &&
+            functionCall.Name.IdentifierName.Equals("union", StringComparison.OrdinalIgnoreCase) &&
+            SemanticModelHelper.TryGetFunctionInNamespace(model, SystemNamespaceType.BuiltInName, functionCall) is not null &&
+            model.GetTypeInfo(syntax) is ObjectType &&
+            functionCall.Arguments.Skip(argumentIndex + 1).Any(argument => ReplacesObjectPath(GetEffectiveType(model, argument.Expression), path));
+
+    private static bool ReplacesObjectPath(TypeSymbol type, ImmutableArray<string> path) => type switch
+    {
+        { TypeKind: TypeKind.Never } => false,
+        UnionType union => union.Members.All(member => ReplacesObjectPath(member.Type, path)),
+        DiscriminatedObjectType discriminated => discriminated.UnionMembersByKey.Values.All(variant => ReplacesObjectPath(variant, path)),
+        ObjectType @object when !path.IsEmpty && TryGetPropertyName(path[0]) is { } name &&
+            @object.Properties.TryGetValue(name, out var property) && property.Flags.HasFlag(TypePropertyFlags.Required)
+            => ReplacesObjectPath(property.TypeReference.Type, path.RemoveAt(0)),
+        // Objects merge recursively. Only a definitely supplied non-object replaces the value at this path.
+        ObjectType or AnyType or ErrorType => false,
+        _ => true,
+    };
 
     /// <summary>
     /// Replaces a known array position at the start of a path with <see cref="AnyIndex"/>.
@@ -227,7 +245,7 @@ public static class SecureValueFlow
                     path.Reverse();
                     return (model.GetSymbolInfo(access), path.ToImmutable());
                 case AccessExpressionSyntax access when access.TryGetPropertyName() is { } name:
-                    path.Add(name);
+                    path.Add(FormatProperty(name));
                     break;
                 case ArrayAccessSyntax arrayAccess:
                     path.Add(arrayAccess.IndexExpression switch
@@ -436,7 +454,6 @@ public static class SecureValueFlow
     /// </summary>
     public static IEnumerable<ImmutableArray<string>> FindSecurePaths(TypeSymbol type)
         => TypeHelper.FindPathsToOutermostSecureTypeComponents(type)
-            .Select(path => path.Select(segment => segment.StartsWith('.') ? segment[1..] : segment).ToImmutableArray())
             .DistinctBy(GetPathKey);
 
     /// <summary>
@@ -478,12 +495,13 @@ public static class SecureValueFlow
 
         var head = path[0];
         var tail = path.RemoveAt(0);
+        var name = TryGetPropertyName(head);
 
         switch (type)
         {
             case DiscriminatedObjectType discriminated:
                 var applicable = discriminated.UnionMembersByKey.Values
-                    .Where(variant => head == AnyMember || variant.Properties.ContainsKey(head) || variant.HasExplicitAdditionalPropertiesType)
+                    .Where(variant => head == AnyMember || (name is not null && variant.Properties.ContainsKey(name)) || variant.HasExplicitAdditionalPropertiesType)
                     .ToArray();
                 return applicable.Length > 0
                     ? applicable.All(variant => IsSecureAtPath(variant, path, absentIsSecure, depth + 1))
@@ -496,10 +514,10 @@ public static class SecureValueFlow
                         : absentIsSecure) &&
                     @object.Properties.Values.All(property => IsSecureAtPath(property.TypeReference.Type, tail, absentIsSecure, depth + 1));
 
-            case ObjectType @object when @object.Properties.TryGetValue(head, out var property):
+            case ObjectType @object when name is not null && @object.Properties.TryGetValue(name, out var property):
                 return IsSecureAtPath(property.TypeReference.Type, tail, absentIsSecure, depth + 1);
 
-            case ObjectType @object:
+            case ObjectType @object when name is not null:
                 return @object is { HasExplicitAdditionalPropertiesType: true, AdditionalProperties: { } additional }
                     ? IsSecureAtPath(additional.TypeReference.Type, tail, absentIsSecure, depth + 1)
                     : absentIsSecure;
@@ -526,12 +544,17 @@ public static class SecureValueFlow
     /// A key that identifies a path by its segments, unlike <see cref="FormatPath"/>, which can't distinguish
     /// <c>a.b</c> from a property literally named <c>'a.b'</c>.
     /// </summary>
-    public static string GetPathKey(ImmutableArray<string> path) => string.Join('\0', path);
+    public static string GetPathKey(ImmutableArray<string> path)
+        => string.Concat(path.Select(segment => $"{segment.Length.ToString(CultureInfo.InvariantCulture)}:{segment}"));
 
     public static bool IsIndexSegment(string segment) => segment.StartsWith('[');
 
     public static string FormatPath(ImmutableArray<string> path)
-        => string.Concat(path.Select(segment => IsIndexSegment(segment) ? segment : $".{segment}"));
+        => string.Concat(path.Select(segment => segment == AnyMember ? ".*" : segment));
+
+    public static string FormatProperty(string name) => $".{name}";
+
+    private static string? TryGetPropertyName(string segment) => segment.StartsWith('.') ? segment[1..] : null;
 
     public static string FormatIndex(int index) => $"[{index.ToString(CultureInfo.InvariantCulture)}]";
 

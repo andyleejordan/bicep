@@ -205,12 +205,59 @@ type optionalCredentials = {
 param optionalCreds optionalCredentials?
 """;
 
+    [TestMethod]
+    [DataRow("choice ? secret : plain", 1)]
+    [DataRow("choice ? secret : ''", 0)]
+    [DataRow("choice ? storage.listKeys().keys[0].value : plain", 1)]
+    [DataRow("choice ? storage.listKeys().keys[0].value : secret", 0)]
+    public void Resource_inputs_check_each_branch_without_rejecting_runtime_values(string expression, int expected)
+        => CompileAndTest($$"""
+param choice bool
+param plain string
+@secure()
+param secret string
+
+resource storage 'Microsoft.Storage/storageAccounts@2024-01-01' existing = {
+  name: 'storage'
+}
+
+resource server 'Microsoft.DBforMySQL/flexibleServers@2023-12-30' = {
+  name: 'server'
+  location: 'westus'
+  properties: {
+    administratorLoginPassword: {{expression}}
+  }
+}
+""", expected);
+
     private void CompileAndTestWithChild(string text, params string[] expectedMessages)
         => AssertLinterRuleDiagnostics(
             UseSecureValueForSecureInputsRule.Code,
             text,
             expectedMessages,
             new Options(AdditionalFiles: [("child.bicep", ChildModule)]));
+
+    [TestMethod]
+    public void Module_param_object_union_only_checks_members_that_survive()
+        => AssertLinterRuleDiagnostics(UseSecureValueForSecureInputsRule.Code, """
+@secure()
+param secret string
+param plain string
+
+module protected 'child.bicep' = {
+  params: {
+    creds: union({ username: 'admin', password: plain }, { password: secret })
+  }
+}
+
+module unprotected 'child.bicep' = {
+  params: {
+    creds: union({ username: 'admin', password: secret }, { password: plain })
+  }
+}
+""",
+            ["Property 'creds.password' expects a secure value, but the value provided may not be secure."],
+            new Options(IncludePosition: IncludePosition.None, AdditionalFiles: [("child.bicep", ChildModule)]));
 
     [TestMethod]
     public void Module_param_expecting_secure_value_should_warn_for_literal()
