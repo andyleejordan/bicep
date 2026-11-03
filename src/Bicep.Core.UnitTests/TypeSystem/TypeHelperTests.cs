@@ -33,6 +33,34 @@ public class TypeHelperTests
     }
 
     [TestMethod]
+    public void Object_merge_preserves_nested_members_and_replacements()
+    {
+        ObjectType first = new("first", default, [new("password", LanguageConstants.SecureString, TypePropertyFlags.Required)]);
+        ObjectType second = new("second", default, [new("password", LanguageConstants.String, TypePropertyFlags.Required)]);
+        TypeHelper.MergeObjectTypes([first, second]).Should().BeOfType<ObjectType>().Subject
+            .Properties["password"].TypeReference.Type.Should().BeSameAs(LanguageConstants.String);
+        TypeHelper.MergeObjectTypes([second, first]).Should().BeOfType<ObjectType>().Subject
+            .Properties["password"].TypeReference.Type.Should().BeSameAs(LanguageConstants.SecureString);
+
+        ObjectType nested = new("nested", default, [new("config", first, TypePropertyFlags.Required)]);
+        ObjectType addition = new("addition", default,
+            [new("config", new ObjectType("config", default, [new("name", LanguageConstants.String, TypePropertyFlags.Required)]), TypePropertyFlags.Required)]);
+        TypeHelper.MergeObjectTypes([nested, addition]).Should().BeOfType<ObjectType>().Subject
+            .Properties["config"].TypeReference.Type.Should().BeOfType<ObjectType>().Subject.Properties.Keys
+            .Should().BeEquivalentTo(["name", "password"]);
+        TypeHelper.MergeObjectTypes([first, LanguageConstants.Object]).Should().BeSameAs(LanguageConstants.Object);
+    }
+
+    [TestMethod]
+    public void Object_merge_stops_at_recursive_members()
+    {
+        ObjectType? recursive = null;
+        recursive = new("recursive", default, [new("nested", new DeferredTypeReference(() => recursive!), TypePropertyFlags.Required)]);
+        var merged = TypeHelper.MergeObjectTypes([recursive, recursive]).Should().BeOfType<ObjectType>().Subject;
+        merged.Properties["nested"].TypeReference.Type.Should().BeSameAs(LanguageConstants.Object);
+    }
+
+    [TestMethod]
     [DynamicData(nameof(GetPrimitiveCollapsePositiveTestCases))]
     public void Primitive_collapse_preserves_and_fuses_refinements(TypeSymbol expected, params TypeSymbol[] toCollapse)
     {

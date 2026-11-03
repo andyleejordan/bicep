@@ -71,6 +71,55 @@ namespace Bicep.Core.TypeSystem
             _ => LanguageConstants.Any,
         };
 
+        public static TypeSymbol MergeObjectTypes(IEnumerable<TypeSymbol> types)
+            => MergeObjectTypes(types, []);
+
+        private static TypeSymbol MergeObjectTypes(IEnumerable<TypeSymbol> types, HashSet<(TypeSymbol, TypeSymbol)> visiting)
+        {
+            ObjectType result = new(LanguageConstants.Object.Name, default, []);
+            foreach (var type in types)
+            {
+                if (TryCollapseTypes([type]) is not ObjectType obj || obj.HasExplicitAdditionalPropertiesType)
+                {
+                    return LanguageConstants.Object;
+                }
+
+                var properties = result.Properties.ToDictionary();
+                foreach (var property in obj.Properties.Values)
+                {
+                    if (properties.TryGetValue(property.Name, out var previous))
+                    {
+                        var mergedType = property.TypeReference.Type;
+                        if (previous.TypeReference.Type is ObjectType previousObject && mergedType is ObjectType nextObject)
+                        {
+                            var pair = (previousObject, nextObject);
+                            if (!visiting.Add(pair))
+                            {
+                                return LanguageConstants.Object;
+                            }
+
+                            mergedType = MergeObjectTypes([previousObject, nextObject], visiting);
+                            visiting.Remove(pair);
+                        }
+
+                        properties[property.Name] = new(property.Name,
+                            property.Flags.HasFlag(TypePropertyFlags.Required)
+                                ? mergedType
+                                : CreateTypeUnion(previous.TypeReference, mergedType),
+                            previous.Flags | property.Flags);
+                    }
+                    else
+                    {
+                        properties[property.Name] = property;
+                    }
+                }
+
+                result = new(LanguageConstants.Object.Name, default, properties.Values);
+            }
+
+            return result;
+        }
+
         public static LambdaType CreateLambdaType(IEnumerable<ITypeReference> argumentTypes, IEnumerable<ITypeReference> optionalArgumentTypes, TypeSymbol returnType)
             => new([.. argumentTypes], [.. optionalArgumentTypes], returnType);
 
