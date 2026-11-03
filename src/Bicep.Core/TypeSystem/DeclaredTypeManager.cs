@@ -33,6 +33,7 @@ namespace Bicep.Core.TypeSystem
         private readonly IBinder binder;
         private readonly IFeatureProvider features;
         private readonly ResourceDerivedTypeResolver resourceDerivedTypeResolver;
+        private readonly ResourceDerivedTypeResolver moduleParameterTypeResolver;
 
         public DeclaredTypeManager(ITypeManager typeManager, IBinder binder, IFeatureProvider features)
         {
@@ -40,6 +41,9 @@ namespace Bicep.Core.TypeSystem
             this.binder = binder;
             this.features = features;
             this.resourceDerivedTypeResolver = new(binder);
+            // Only module parameters keep a resource-derived type's @secure(). Outputs and parameter assignments also
+            // feed template emission, so they keep resolving to the plain schema type.
+            this.moduleParameterTypeResolver = new(binder, preserveSecurity: true);
             this.typeCycles = new(() => CyclicTypeCheckVisitor.FindCycles(
                 binder,
                 syntax => TryGetTypeFromTypeSyntax(syntax)?.Type));
@@ -2159,7 +2163,7 @@ namespace Bicep.Core.TypeSystem
                 }
                 else
                 {
-                    type = resourceDerivedTypeResolver.ResolveResourceDerivedTypes(type);
+                    type = moduleParameterTypeResolver.ResolveResourceDerivedTypes(type);
                 }
 
                 var flags = parameter.IsRequired ? TypePropertyFlags.Required | TypePropertyFlags.WriteOnly : TypePropertyFlags.WriteOnly;

@@ -25,6 +25,46 @@ namespace Bicep.Core.UnitTests.TypeSystem;
 public class ResourceDerivedTypeResolverTests
 {
     [TestMethod]
+    [DataRow(ResourceDerivedTypeVariant.Input)]
+    [DataRow(ResourceDerivedTypeVariant.Output)]
+    [DataRow(ResourceDerivedTypeVariant.None)]
+    public void Declared_security_survives_resource_type_resolution_when_preserved(ResourceDerivedTypeVariant variant)
+    {
+        var text = TypeFactory.CreateStringType(2, 20, "^[a-z]+$");
+        var (resolver, reference) = SetupResolver(text, preserveSecurity: true);
+        var unresolved = new UnresolvedResourceDerivedType(reference, [], LanguageConstants.SecureString, variant);
+        var resolved = resolver.ResolveResourceDerivedTypes(unresolved).Should().BeOfType<StringType>().Subject;
+        resolved.ValidationFlags.Should().HaveFlag(TypeSymbolValidationFlags.IsSecure);
+        resolved.MinLength.Should().Be(2);
+        resolved.MaxLength.Should().Be(20);
+        resolved.Pattern.Should().Be("^[a-z]+$");
+
+        ObjectType obj = new("settings", default, [new("value", LanguageConstants.String)], new(LanguageConstants.String));
+        (resolver, reference) = SetupResolver(obj, preserveSecurity: true);
+        unresolved = new(reference, [], TypeHelper.MakeNullable(LanguageConstants.SecureObject), variant);
+        var resolvedObject = resolver.ResolveResourceDerivedTypes(unresolved).Should().BeOfType<ObjectType>().Subject;
+        resolvedObject.ValidationFlags.Should().HaveFlag(TypeSymbolValidationFlags.IsSecure);
+        resolvedObject.Properties.Keys.Should().Equal("value");
+        resolvedObject.AdditionalProperties?.TypeReference.Type.Should().BeSameAs(LanguageConstants.String);
+    }
+
+    [TestMethod]
+    [DataRow(ResourceDerivedTypeVariant.Input)]
+    [DataRow(ResourceDerivedTypeVariant.Output)]
+    [DataRow(ResourceDerivedTypeVariant.None)]
+    public void Declared_security_is_dropped_by_default(ResourceDerivedTypeVariant variant)
+    {
+        var (resolver, reference) = SetupResolver(TypeFactory.CreateStringType(2, 20, "^[a-z]+$"));
+        var unresolved = new UnresolvedResourceDerivedType(reference, [], LanguageConstants.SecureString, variant);
+        unresolved.ValidationFlags.Should().Be(TypeSymbolValidationFlags.Default);
+        resolver.ResolveResourceDerivedTypes(unresolved).ValidationFlags.Should().NotHaveFlag(TypeSymbolValidationFlags.IsSecure);
+
+        (resolver, reference) = SetupResolver(new ObjectType("settings", default, [new("value", LanguageConstants.String)], new(LanguageConstants.String)));
+        unresolved = new(reference, [], LanguageConstants.SecureObject, variant);
+        resolver.ResolveResourceDerivedTypes(unresolved).ValidationFlags.Should().NotHaveFlag(TypeSymbolValidationFlags.IsSecure);
+    }
+
+    [TestMethod]
     [DynamicData(nameof(GetTypesNotInNeedOfBinding))]
     public void Returns_input_if_no_unbound_types_are_enclosed(TypeSymbol type)
     {
@@ -181,7 +221,7 @@ public class ResourceDerivedTypeResolverTests
         bound.ReturnType.Should().BeSameAs(hydrated);
     }
 
-    private static (ResourceDerivedTypeResolver sut, ResourceTypeReference unhydratedTypeRef) SetupResolver(TypeSymbol hydratedType)
+    private static (ResourceDerivedTypeResolver sut, ResourceTypeReference unhydratedTypeRef) SetupResolver(TypeSymbol hydratedType, bool preserveSecurity = false)
     {
         var unhydratedTypeRef = new ResourceTypeReference("type", "version");
         var resourceTypeProviderMock = StrictMock.Of<IResourceTypeProvider>();
@@ -208,7 +248,7 @@ public class ResourceDerivedTypeResolverTests
         var binderMock = StrictMock.Of<IBinder>();
         binderMock.Setup(x => x.NamespaceResolver).Returns(resolver);
 
-        return (new(binderMock.Object), unhydratedTypeRef);
+        return (new(binderMock.Object, preserveSecurity), unhydratedTypeRef);
     }
 
     [TestMethod]

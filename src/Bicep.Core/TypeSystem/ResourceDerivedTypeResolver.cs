@@ -20,10 +20,12 @@ public class ResourceDerivedTypeResolver
     private readonly Stack<TypeSymbol> currentlySearchingForUnresolvedTypes = new();
     private readonly ConcurrentDictionary<TypeSymbol, bool> containsUnresolvedTypesCache = new();
     private readonly IBinder binder;
+    private readonly bool preserveSecurity;
 
-    public ResourceDerivedTypeResolver(IBinder binder)
+    public ResourceDerivedTypeResolver(IBinder binder, bool preserveSecurity = false)
     {
         this.binder = binder;
+        this.preserveSecurity = preserveSecurity;
     }
 
     public TypeSymbol ResolveResourceDerivedTypes(TypeSymbol potentiallyUnresolved)
@@ -97,12 +99,27 @@ public class ResourceDerivedTypeResolver
                 return unresolved.FallbackType;
             }
 
-            return unresolved.Variant switch
+            current = unresolved.Variant switch
             {
                 ResourceDerivedTypeVariant.Input => TypeHelper.RemovePropertyFlagsRecursively(current, TypePropertyFlags.WriteOnly),
                 ResourceDerivedTypeVariant.Output => TypeHelper.RemovePropertyFlagsRecursively(current, TypePropertyFlags.ReadOnly),
                 _ => current,
             };
+
+            // The resource schema refines the shape, but must not remove an explicit secureString/secureObject boundary.
+            var fallback = TypeHelper.TryRemoveNullability(unresolved.FallbackType) ?? unresolved.FallbackType;
+            if (preserveSecurity && fallback.ValidationFlags.HasFlag(TypeSymbolValidationFlags.IsSecure))
+            {
+                var flags = current.ValidationFlags | TypeSymbolValidationFlags.IsSecure;
+                current = current switch
+                {
+                    StringType text => TypeFactory.CreateStringType(text.MinLength, text.MaxLength, text.Pattern, flags),
+                    ObjectType obj => obj.With(validationFlags: flags),
+                    _ => current,
+                };
+            }
+
+            return current;
         }
 
         return unresolved.FallbackType;
