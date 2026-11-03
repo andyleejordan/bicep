@@ -24,6 +24,12 @@ internal static class TypeCollapser
     /// </remarks>
     private static TypeSymbol? TryCollapse(UnionType unionType)
     {
+        if (Flatten(unionType).Where(member => member is not NullType)
+            .Select(member => member.ValidationFlags.HasFlag(TypeSymbolValidationFlags.IsSecure)).Distinct().Skip(1).Any())
+        {
+            return null;
+        }
+
         var collapseState = UnionCollapseState.Initialize();
         foreach (var member in Flatten(unionType))
         {
@@ -401,7 +407,8 @@ internal static class TypeCollapser
                             // value. Make sure it is not flagged as required.
                             propertyFlags &= ~TypePropertyFlags.Required;
 
-                            if (member.AdditionalProperties?.TypeReference.Type is { } addlPropertiesType)
+                            if (member.HasExplicitAdditionalPropertiesType &&
+                                member.AdditionalProperties?.TypeReference.Type is { } addlPropertiesType)
                             {
                                 possibleTypes.Add(addlPropertiesType);
                             }
