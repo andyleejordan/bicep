@@ -87,7 +87,15 @@ namespace Bicep.Core.Semantics.Namespaces
                         {
                             if (argumentTypes[i] is not ArrayType arr)
                             {
-                                return new(LanguageConstants.Array);
+                                var itemType = TypeHelper.GetArrayItemType(argumentTypes[i]);
+                                if (itemType is AnyType)
+                                {
+                                    return new(LanguageConstants.Array);
+                                }
+
+                                itemTypes[i] = itemType;
+                                maxLength = null;
+                                continue;
                             }
 
                             itemTypes[i] = arr.Item;
@@ -1379,13 +1387,12 @@ namespace Bicep.Core.Semantics.Namespaces
 
         private static TypeSymbol? CalculateLambdaFromArrayParam(GetFunctionArgumentType getArgumentType, int arrayIndex, Func<TypeSymbol, LambdaType> lambdaBuilder)
         {
-            if (getArgumentType(arrayIndex) is not ArrayType arrayType)
+            if (getArgumentType(arrayIndex) is not { } arrayType || !TypeValidator.AreTypesAssignable(arrayType, LanguageConstants.Array))
             {
                 return null;
             }
 
-            var itemType = arrayType.Item;
-            return lambdaBuilder(itemType.Type);
+            return lambdaBuilder(TypeHelper.GetArrayItemType(arrayType));
         }
 
         private static TypeSymbol CalculateIndexTypeOfArray(TypeSymbol arrayType) => TypeFactory.CreateIntegerType(

@@ -64,6 +64,13 @@ namespace Bicep.Core.TypeSystem
         /// </summary>
         public static TypeSymbol MakeNullable(ITypeReference typeReference) => CreateTypeUnion(typeReference, LanguageConstants.Null);
 
+        public static TypeSymbol GetArrayItemType(TypeSymbol type) => type switch
+        {
+            ArrayType array => array.Item.Type,
+            UnionType union => CreateTypeUnion(union.Members.Where(member => member.Type is not NullType).Select(member => GetArrayItemType(member.Type))),
+            _ => LanguageConstants.Any,
+        };
+
         public static LambdaType CreateLambdaType(IEnumerable<ITypeReference> argumentTypes, IEnumerable<ITypeReference> optionalArgumentTypes, TypeSymbol returnType)
             => new([.. argumentTypes], [.. optionalArgumentTypes], returnType);
 
