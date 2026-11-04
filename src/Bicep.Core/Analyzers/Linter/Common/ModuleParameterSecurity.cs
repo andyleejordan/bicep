@@ -13,12 +13,18 @@ namespace Bicep.Core.Analyzers.Linter.Common;
 
 public static class ModuleParameterSecurity
 {
+    /// <summary>
+    /// Enumerates the parameter assignments of every module declaration. Yields nothing unless the
+    /// moduleParameterSecurity experimental feature is enabled.
+    /// </summary>
     public static IEnumerable<ObjectPropertySyntax> EnumerateAssignments(SemanticModel model)
-        => model.Root.ModuleDeclarations
-            .SelectMany(module => module.DeclaringModule.TryGetBody()
-                ?.TryGetPropertyByName(LanguageConstants.ModuleParamsPropertyName)?.Value is ObjectSyntax parameters
-                    ? parameters.Properties
-                    : []);
+        => model.Features.ModuleParameterSecurityEnabled
+            ? model.Root.ModuleDeclarations
+                .SelectMany(module => module.DeclaringModule.TryGetBody()
+                    ?.TryGetPropertyByName(LanguageConstants.ModuleParamsPropertyName)?.Value is ObjectSyntax parameters
+                        ? parameters.Properties
+                        : [])
+            : [];
 
     public static IEnumerable<string> EnumerateMismatches(SemanticModel model, ObjectPropertySyntax assignment, bool secureInput)
     {

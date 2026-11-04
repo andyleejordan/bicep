@@ -10,7 +10,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests;
 
 [TestClass]
-public class UseSecureValueForSecureInputsRuleTests : LinterRuleTestsBase
+public class UseSecureValueForSecureInputsRuleTests : ModuleParameterSecurityTestsBase
 {
     private void CompileAndTest(string text, int expectedDiagnosticCount, Options? options = null)
     {
@@ -187,7 +187,7 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
                 {{member}}: item.{{nullable}}{{member}}
               }
             }]
-            """, $"@secure()\nparam {member} string{nullable}");
+            """, $"@secure()\nparam {member} string{nullable}", member);
     }
 
     [TestMethod]
@@ -204,7 +204,7 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
                 certificateValue: certificate.?certificateValue
               }
             }
-            """, "@secure()\nparam certificateValue string?");
+            """, "@secure()\nparam certificateValue string?", "certificateValue");
 
     [TestMethod]
     public void Avm_named_value_fallback_requires_secure_parameter()
@@ -221,7 +221,7 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
                 value: item.?value ?? newGuidValue
               }
             }]
-            """, "@secure()\nparam value string");
+            """, "@secure()\nparam value string", "value");
 
     [TestMethod]
     public void Avm_automation_variables_require_typed_secure_value()
@@ -280,7 +280,7 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
                 credentials: logger.?credentials
               }
             }]
-            """, "@secure()\nparam credentials resourceInput<'Microsoft.ApiManagement/service/workspaces/loggers@2024-05-01'>.properties.credentials?");
+            """, "@secure()\nparam credentials resourceInput<'Microsoft.ApiManagement/service/workspaces/loggers@2024-05-01'>.properties.credentials?", "credentials.*");
 
     [TestMethod]
     [DataRow(false)]
@@ -318,7 +318,7 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
               "resources": {}
             }
             """;
-        AssertHardening(parent, child, "child.json");
+        AssertHardening(parent, child, "configurationProtectedSettings.*", "child.json");
     }
 
     [TestMethod]
@@ -361,8 +361,7 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
 
     [TestMethod]
     public void Module_parameter_diagnostic_names_the_parameter_path()
-    {
-        var result = CompilationHelper.Compile(("main.bicep", """
+        => AssertFlow("""
             module child 'child.bicep' = {
               name: 'child'
               params: {
@@ -371,16 +370,12 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
                 }
               }
             }
-            """), ("child.bicep", """
+            """, """
             param config {
               @secure()
               password: string
             }
-            """));
-        result.Diagnostics.Where(diagnostic => diagnostic.Code == UseSecureValueForSecureInputsRule.Code)
-            .Should().ContainSingle().Which.Message.Should()
-            .Be("Module parameter 'config.password' expects a secure value, but the value provided may not be secure.");
-    }
+            """, [InputWarning("config.password")], []);
 
     [TestMethod]
     [DataRow("uniqueString(secret)")]
@@ -400,19 +395,61 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
             }
             """, "@secure()\nparam value string", 1, 0);
 
-    private static void AssertHardening(string parent, string child, string childPath = "child.bicep")
+    // Checking module parameters belongs to the moduleParameterSecurity experimental feature.
+    [TestMethod]
+    public void Module_parameters_are_checked_only_when_module_parameter_security_is_enabled()
     {
-        AssertFlow(parent.Replace("SECURE", ""), child, 1, 0, childPath);
-        AssertFlow(parent.Replace("SECURE", "@secure()"), child, 0, 0, childPath);
+        const string parent = """
+            module child 'child.bicep' = {
+              name: 'child'
+              params: {
+                password: 'public'
+              }
+            }
+            """;
+        const string child = "@secure()\nparam password string";
+        AssertFlow(parent, child, [InputWarning("password")], []);
+        AssertFlow(parent, child, [], [], enabled: false);
     }
 
-    private static void AssertFlow(string parent, string child, int inputWarnings, int leakWarnings, string childPath = "child.bicep")
-    {
-        var result = CompilationHelper.Compile(("main.bicep", parent), (childPath, child));
-        result.Diagnostics.Where(diagnostic => diagnostic.Level == DiagnosticLevel.Error).Should().BeEmpty();
-        result.Diagnostics.Where(diagnostic => diagnostic.Code == UseSecureValueForSecureInputsRule.Code)
-            .Select(diagnostic => diagnostic.Level).Should().Equal(Enumerable.Repeat(DiagnosticLevel.Warning, inputWarnings));
-        result.Diagnostics.Where(diagnostic => diagnostic.Code == NoSecureValuesInInsecureInputsRule.Code)
-            .Select(diagnostic => diagnostic.Level).Should().Equal(Enumerable.Repeat(DiagnosticLevel.Warning, leakWarnings));
-    }
+    // The resource property check is older than the feature, so it keeps working with the feature off.
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void Resource_properties_are_checked_with_or_without_module_parameter_security(bool enabled)
+        => CompileAndTest("""
+            @secure()
+            param password string
+            resource secured 'Microsoft.DBforMySQL/flexibleServers@2023-12-30' = {
+              name: 'secured'
+              location: 'westus'
+              properties: {
+                administratorLoginPassword: password
+              }
+            }
+            resource unsecured 'Microsoft.DBforMySQL/flexibleServers@2023-12-30' = {
+              name: 'unsecured'
+              location: 'westus'
+              properties: {
+                administratorLoginPassword: 'hardCodedValue'
+              }
+            }
+            """, 1, new Options(FeatureOverrides: new(ModuleParameterSecurityEnabled: enabled)));
+
+    // Interpolating a secure value stays secure through a type inference change that the feature turns on.
+    [TestMethod]
+    [DataRow(true, 0)]
+    [DataRow(false, 1)]
+    public void Resource_properties_accept_interpolated_secrets_only_with_module_parameter_security(bool enabled, int warnings)
+        => CompileAndTest("""
+            @secure()
+            param password string
+            resource server 'Microsoft.DBforMySQL/flexibleServers@2023-12-30' = {
+              name: 'server'
+              location: 'westus'
+              properties: {
+                administratorLoginPassword: '${password}!'
+              }
+            }
+            """, warnings, new Options(FeatureOverrides: new(ModuleParameterSecurityEnabled: enabled)));
 }

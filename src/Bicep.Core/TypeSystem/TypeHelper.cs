@@ -29,8 +29,9 @@ namespace Bicep.Core.TypeSystem
         /// <summary>
         /// Try to collapse multiple types into a single (non-union) type. Returns null if this is not possible.
         /// </summary>
-        public static TypeSymbol? TryCollapseTypes(IEnumerable<ITypeReference> itemTypes)
-            => TypeCollapser.TryCollapse(CreateTypeUnion(itemTypes));
+        /// <param name="preserveSecurity">Whether to avoid collapsing away the difference between secure and non-secure types.</param>
+        public static TypeSymbol? TryCollapseTypes(IEnumerable<ITypeReference> itemTypes, bool preserveSecurity = false)
+            => TypeCollapser.TryCollapse(CreateTypeUnion(itemTypes), preserveSecurity);
 
         /// <summary>
         /// Collapses multiple types into either:
@@ -50,10 +51,10 @@ namespace Bicep.Core.TypeSystem
             };
         }
 
-        public static TypeSymbol CollapseOrCreateTypeUnion(IEnumerable<ITypeReference> itemTypes)
+        public static TypeSymbol CollapseOrCreateTypeUnion(IEnumerable<ITypeReference> itemTypes, bool preserveSecurity = false)
         {
             var unionType = CreateTypeUnion(itemTypes);
-            return TypeCollapser.TryCollapse(unionType) ?? unionType;
+            return TypeCollapser.TryCollapse(unionType, preserveSecurity) ?? unionType;
         }
 
         public static TypeSymbol CollapseOrCreateTypeUnion(params ITypeReference[] itemTypes)
@@ -79,7 +80,7 @@ namespace Bicep.Core.TypeSystem
             ObjectType result = new(LanguageConstants.Object.Name, default, []);
             foreach (var type in types)
             {
-                if (TryCollapseTypes([type]) is not ObjectType obj || obj.HasExplicitAdditionalPropertiesType)
+                if (TryCollapseTypes([type], preserveSecurity: true) is not ObjectType obj || obj.HasExplicitAdditionalPropertiesType)
                 {
                     return LanguageConstants.Object;
                 }
@@ -227,7 +228,8 @@ namespace Bicep.Core.TypeSystem
             string propertyName,
             bool isSafeAccess,
             bool shouldWarn,
-            IDiagnosticWriter diagnostics) => TryCollapseTypes(unionType.Members) switch
+            IDiagnosticWriter diagnostics,
+            bool preserveSecurity = false) => TryCollapseTypes(unionType.Members, preserveSecurity) switch
             {
                 ObjectType @object => GetNamedPropertyType(
                     @object,
@@ -242,7 +244,8 @@ namespace Bicep.Core.TypeSystem
                     propertyName,
                     isSafeAccess,
                     shouldWarn,
-                    diagnostics),
+                    diagnostics,
+                    preserveSecurity),
                 null when TryGetModuleUnionBodyType(unionType) is UnionType bodyUnion
                     => GetNamedPropertyType(
                         bodyUnion,
@@ -250,7 +253,8 @@ namespace Bicep.Core.TypeSystem
                         propertyName,
                         isSafeAccess,
                         shouldWarn,
-                        diagnostics),
+                        diagnostics,
+                        preserveSecurity),
                 // TODO improve later here if necessary - we should be able to block stuff that is obviously wrong
                 _ => LanguageConstants.Any,
             };
@@ -283,7 +287,8 @@ namespace Bicep.Core.TypeSystem
             string propertyName,
             bool isSafeAccess,
             bool shouldWarn,
-            IDiagnosticWriter diagnostics)
+            IDiagnosticWriter diagnostics,
+            bool preserveSecurity = false)
         {
             if (propertyName.Equals(discriminatedObjectType.DiscriminatorProperty.Name))
             {
@@ -318,7 +323,7 @@ namespace Bicep.Core.TypeSystem
             if (declaredOnAny)
             {
                 return GenerateAccessError(flags, discriminatedObjectType, propertyExpressionPositionable, propertyName, isSafeAccess, shouldWarn, diagnostics)
-                    ?? TypeHelper.CollapseOrCreateTypeUnion(propertyTypes);
+                    ?? TypeHelper.CollapseOrCreateTypeUnion(propertyTypes, preserveSecurity);
             }
 
             return GetUnknownPropertyType(

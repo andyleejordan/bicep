@@ -11,7 +11,7 @@ namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests;
 
 // Reduced forwarding boundaries from https://github.com/Azure/bicep-registry-modules/pull/7472.
 [TestClass]
-public class NoSecureValuesInInsecureInputsRuleTests : LinterRuleTestsBase
+public class NoSecureValuesInInsecureInputsRuleTests : ModuleParameterSecurityTestsBase
 {
     [TestMethod]
     [DataRow("empty(secret)", "bool")]
@@ -112,6 +112,24 @@ public class NoSecureValuesInInsecureInputsRuleTests : LinterRuleTestsBase
               }
             }
             """, $"param value {type}", 0, 1);
+
+    // Checking module parameters belongs to the moduleParameterSecurity experimental feature.
+    [TestMethod]
+    public void Module_parameters_are_checked_only_when_module_parameter_security_is_enabled()
+    {
+        const string parent = """
+            @secure()
+            param secret string
+            module child 'child.bicep' = {
+              name: 'child'
+              params: {
+                value: secret
+              }
+            }
+            """;
+        AssertFlow(parent, "param value string", [], [LeakWarning("value")]);
+        AssertFlow(parent, "param value string", [], [], enabled: false);
+    }
 
     [TestMethod]
     public void Avm_cache_child_requires_secure_parameter()
@@ -219,7 +237,7 @@ public class NoSecureValuesInInsecureInputsRuleTests : LinterRuleTestsBase
             }
             """;
         var source = (includeOtherSecret ? parent : parent.Replace("      secret", "      'public'")).Replace("vault.getSecret('value')", expression);
-        var result = CompilationHelper.Compile(("main.bicep", source), ("child.bicep", "param values array"));
+        var result = CompileModule(source, "param values array");
         result.Diagnostics.Where(diagnostic => diagnostic.Code == "BCP180").Should().ContainSingle();
         result.Diagnostics.Where(diagnostic => diagnostic.Code == NoSecureValuesInInsecureInputsRule.Code).Should().HaveCount(includeOtherSecret ? 1 : 0);
     }
@@ -290,15 +308,5 @@ public class NoSecureValuesInInsecureInputsRuleTests : LinterRuleTestsBase
             """;
         AssertFlow(parent.Replace("KIND", "secured"), child, 0, 0);
         AssertFlow(parent.Replace("KIND", "plain"), child, 0, 1);
-    }
-
-    private static void AssertFlow(string parent, string child, int inputWarnings, int leakWarnings, string childPath = "child.bicep")
-    {
-        var result = CompilationHelper.Compile(("main.bicep", parent), (childPath, child));
-        result.Diagnostics.Where(diagnostic => diagnostic.Level == DiagnosticLevel.Error).Should().BeEmpty();
-        result.Diagnostics.Where(diagnostic => diagnostic.Code == UseSecureValueForSecureInputsRule.Code)
-            .Select(diagnostic => diagnostic.Level).Should().Equal(Enumerable.Repeat(DiagnosticLevel.Warning, inputWarnings));
-        result.Diagnostics.Where(diagnostic => diagnostic.Code == NoSecureValuesInInsecureInputsRule.Code)
-            .Select(diagnostic => diagnostic.Level).Should().Equal(Enumerable.Repeat(DiagnosticLevel.Warning, leakWarnings));
     }
 }

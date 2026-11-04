@@ -62,7 +62,7 @@ namespace Bicep.Core.Semantics.Namespaces
 
         private static IEnumerable<NamespaceValue<FunctionOverload>> GetSystemOverloads(IFeatureProvider featureProvider)
         {
-            static IEnumerable<FunctionOverload> GetAlwaysPermittedOverloads()
+            static IEnumerable<FunctionOverload> GetAlwaysPermittedOverloads(IFeatureProvider featureProvider)
             {
                 yield return new FunctionOverloadBuilder(LanguageConstants.AnyFunction)
                     .WithReturnType(LanguageConstants.Any)
@@ -72,7 +72,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .Build();
 
                 yield return new FunctionOverloadBuilder("concat")
-                    .WithReturnResultBuilder(TryDeriveLiteralReturnType("concat", (_, _, _, argumentTypes) =>
+                    .WithReturnResultBuilder(TryDeriveLiteralReturnType("concat", (model, _, _, argumentTypes) =>
                     {
                         if (argumentTypes.All(t => t is TupleType))
                         {
@@ -87,7 +87,9 @@ namespace Bicep.Core.Semantics.Namespaces
                         {
                             if (argumentTypes[i] is not ArrayType arr)
                             {
-                                var itemType = TypeHelper.GetArrayItemType(argumentTypes[i]);
+                                var itemType = model.Features.ModuleParameterSecurityEnabled
+                                    ? TypeHelper.GetArrayItemType(argumentTypes[i])
+                                    : LanguageConstants.Any;
                                 if (itemType is AnyType)
                                 {
                                     return new(LanguageConstants.Array);
@@ -237,11 +239,15 @@ namespace Bicep.Core.Semantics.Namespaces
 
                 static int? MaxLength(ObjectType @object) => @object.AdditionalProperties is null ? @object.Properties.Count : null;
 
+                // the length of a secret is not itself a secret
+                static TypeSymbolValidationFlags LengthFlags(SemanticModel model, TypeSymbolValidationFlags flags)
+                    => model.Features.ModuleParameterSecurityEnabled ? flags & ~TypeSymbolValidationFlags.IsSecure : flags;
+
                 yield return new FunctionOverloadBuilder("length")
-                    .WithReturnResultBuilder(TryDeriveLiteralReturnType("length", (_, _, _, argumentTypes) => new(argumentTypes.FirstOrDefault() switch
+                    .WithReturnResultBuilder(TryDeriveLiteralReturnType("length", (model, _, _, argumentTypes) => new(argumentTypes.FirstOrDefault() switch
                     {
-                        StringType @string => TypeFactory.CreateIntegerType(@string.MinLength ?? 0, @string.MaxLength, @string.ValidationFlags & ~TypeSymbolValidationFlags.IsSecure),
-                        ObjectType @object => TypeFactory.CreateIntegerType(MinLength(@object), MaxLength(@object), @object.ValidationFlags & ~TypeSymbolValidationFlags.IsSecure),
+                        StringType @string => TypeFactory.CreateIntegerType(@string.MinLength ?? 0, @string.MaxLength, LengthFlags(model, @string.ValidationFlags)),
+                        ObjectType @object => TypeFactory.CreateIntegerType(MinLength(@object), MaxLength(@object), LengthFlags(model, @object.ValidationFlags)),
                         DiscriminatedObjectType discriminatedObject => TypeFactory.CreateIntegerType(
                             minValue: discriminatedObject.UnionMembersByKey.Values.Min(MinLength),
                             maxValue: discriminatedObject.UnionMembersByKey.Values
@@ -670,16 +676,20 @@ namespace Bicep.Core.Semantics.Namespaces
                     .Build();
 
                 yield return new FunctionOverloadBuilder("union")
-                    .WithReturnResultBuilder(TryDeriveLiteralReturnType("union", (_, _, _, argumentTypes) =>
-                        new(TypeHelper.MergeObjectTypes(argumentTypes))), LanguageConstants.Object)
+                    // TODO even with non-literal types, some type arithmetic could be performed
+                    .WithReturnResultBuilder(TryDeriveLiteralReturnType("union", (model, _, _, argumentTypes) =>
+                        new(model.Features.ModuleParameterSecurityEnabled ? TypeHelper.MergeObjectTypes(argumentTypes) : LanguageConstants.Object)), LanguageConstants.Object)
                     .WithGenericDescription(UnionDescription)
                     .WithDescription("Returns a single object with all elements from the parameters. Duplicate keys are only included once.")
                     .WithVariableParameter("object", LanguageConstants.Object, minimumCount: 2, "The first object to use for joining elements.")
                     .Build();
 
                 yield return new FunctionOverloadBuilder("union")
-                    .WithReturnResultBuilder(TryDeriveLiteralReturnType("union", (_, _, _, argumentTypes) =>
-                        new(TypeFactory.CreateArrayType(TypeHelper.CreateTypeUnion(argumentTypes.Select(TypeHelper.GetArrayItemType))))), LanguageConstants.Array)
+                    // TODO even with non-literal types, some type arithmetic could be performed
+                    .WithReturnResultBuilder(TryDeriveLiteralReturnType("union", (model, _, _, argumentTypes) =>
+                        new(model.Features.ModuleParameterSecurityEnabled
+                            ? TypeFactory.CreateArrayType(TypeHelper.CreateTypeUnion(argumentTypes.Select(TypeHelper.GetArrayItemType)))
+                            : LanguageConstants.Array)), LanguageConstants.Array)
                     .WithGenericDescription(UnionDescription)
                     .WithDescription("Returns a single array with all elements from the parameters. Duplicate values are only included once.")
                     .WithVariableParameter("object", LanguageConstants.Array, minimumCount: 2, "The first array to use for joining elements.")
@@ -1122,7 +1132,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Filters an array with a custom filtering function.")
                     .WithRequiredParameter("array", LanguageConstants.Array, "The array to filter.")
                     .WithRequiredParameter("predicate", TypeHelper.CreateLambdaType([LanguageConstants.Any], [LanguageConstants.Int], LanguageConstants.Bool), "The predicate applied to each input array element. If false, the item will be filtered out of the output array.",
-                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(getArgumentType, 0, t => TypeHelper.CreateLambdaType([t], [LanguageConstants.Int], LanguageConstants.Bool)))
+                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(featureProvider, getArgumentType, 0, t => TypeHelper.CreateLambdaType([t], [LanguageConstants.Int], LanguageConstants.Bool)))
                     .WithReturnResultBuilder((_, _, _, argumentTypes) => new(argumentTypes[0] switch
                     {
                         // If a tuple is filtered, each member of the resulting array will be assignable to <input tuple>.Item, but information about specific indices and tuple length is no longer reliable.
@@ -1138,7 +1148,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Applies a custom mapping function to each element of an array and returns the result array.")
                     .WithRequiredParameter("array", LanguageConstants.Array, "The array to map.")
                     .WithRequiredParameter("predicate", TypeHelper.CreateLambdaType([LanguageConstants.Any], [LanguageConstants.Int], LanguageConstants.Any), "The predicate applied to each input array element, in order to generate the output array.",
-                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(getArgumentType, 0, t => TypeHelper.CreateLambdaType([t], [LanguageConstants.Int], LanguageConstants.Any)))
+                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(featureProvider, getArgumentType, 0, t => TypeHelper.CreateLambdaType([t], [LanguageConstants.Int], LanguageConstants.Any)))
                     .WithReturnResultBuilder((_, _, _, argumentTypes) => argumentTypes[1] switch
                     {
                         LambdaType lambdaType => new(new TypedArrayType(lambdaType.ReturnType.Type, TypeSymbolValidationFlags.Default)),
@@ -1162,7 +1172,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Sorts an array with a custom sort function.")
                     .WithRequiredParameter("array", LanguageConstants.Array, "The array to sort.")
                     .WithRequiredParameter("predicate", TypeHelper.CreateLambdaType([LanguageConstants.Any, LanguageConstants.Any], [], LanguageConstants.Bool), "The predicate used to compare two array elements for ordering. If true, the second element will be ordered after the first in the output array.",
-                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(getArgumentType, 0, t => TypeHelper.CreateLambdaType([t, t], [], LanguageConstants.Bool)))
+                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(featureProvider, getArgumentType, 0, t => TypeHelper.CreateLambdaType([t, t], [], LanguageConstants.Bool)))
                     .WithReturnResultBuilder((_, _, _, argumentTypes) => new(argumentTypes[0] switch
                     {
                         // When a tuple is sorted, the resultant array will be of the same length as the input tuple, but the information about which member resides at which index can no longer be relied upon.
@@ -1219,9 +1229,9 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Converts an array to an object with a custom key function and optional custom value function.")
                     .WithRequiredParameter("array", LanguageConstants.Array, "The array to map to an object.")
                     .WithRequiredParameter("keyPredicate", OneParamLambda(LanguageConstants.Any, LanguageConstants.String), "The predicate applied to each input array element to return the object key.",
-                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(getArgumentType, 0, t => OneParamLambda(t, LanguageConstants.String)))
+                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(featureProvider, getArgumentType, 0, t => OneParamLambda(t, LanguageConstants.String)))
                     .WithOptionalParameter("valuePredicate", OneParamLambda(LanguageConstants.Any, LanguageConstants.Any), "The optional predicate applied to each input array element to return the object value.",
-                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(getArgumentType, 0, t => OneParamLambda(t, LanguageConstants.Any)))
+                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(featureProvider, getArgumentType, 0, t => OneParamLambda(t, LanguageConstants.Any)))
                     .WithReturnType(LanguageConstants.Any)
                     .WithReturnResultBuilder((_, _, _, argumentTypes) =>
                     {
@@ -1243,9 +1253,9 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Converts an array to an object containing a lookup from key to array values filtered by said key. Values can be optionally translated using a mapping function.")
                     .WithRequiredParameter("array", LanguageConstants.Array, "The array to map to an object.")
                     .WithRequiredParameter("keyPredicate", OneParamLambda(LanguageConstants.Any, LanguageConstants.String), "The predicate applied to each input array element to return the object key.",
-                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(getArgumentType, 0, t => OneParamLambda(t, LanguageConstants.String)))
+                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(featureProvider, getArgumentType, 0, t => OneParamLambda(t, LanguageConstants.String)))
                     .WithOptionalParameter("valuePredicate", OneParamLambda(LanguageConstants.Any, LanguageConstants.Any), "The optional predicate applied to each input array element to return the object value.",
-                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(getArgumentType, 0, t => OneParamLambda(t, LanguageConstants.Any)))
+                        calculator: (getArgumentType, _) => CalculateLambdaFromArrayParam(featureProvider, getArgumentType, 0, t => OneParamLambda(t, LanguageConstants.Any)))
                     .WithReturnType(LanguageConstants.Any)
                     .WithReturnResultBuilder((_, _, _, argumentTypes) =>
                     {
@@ -1345,7 +1355,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     ? overload
                     : overload.WithAdditionalFlags(FunctionFlags.Pure);
 
-            foreach (var overload in GetAlwaysPermittedOverloads())
+            foreach (var overload in GetAlwaysPermittedOverloads(featureProvider))
             {
                 yield return new(MarkPureIfEvaluableInParameterFile(overload), (_, _) => true);
             }
@@ -1399,14 +1409,17 @@ namespace Bicep.Core.Semantics.Namespaces
                 return returnType;
             };
 
-        private static TypeSymbol? CalculateLambdaFromArrayParam(GetFunctionArgumentType getArgumentType, int arrayIndex, Func<TypeSymbol, LambdaType> lambdaBuilder)
+        private static TypeSymbol? CalculateLambdaFromArrayParam(IFeatureProvider featureProvider, GetFunctionArgumentType getArgumentType, int arrayIndex, Func<TypeSymbol, LambdaType> lambdaBuilder)
         {
-            if (getArgumentType(arrayIndex) is not { } arrayType || !TypeValidator.AreTypesAssignable(arrayType, LanguageConstants.Array))
+            var argumentType = getArgumentType(arrayIndex);
+
+            // nullable and union arrays also give the lambda an item type
+            if (featureProvider.ModuleParameterSecurityEnabled && TypeValidator.AreTypesAssignable(argumentType, LanguageConstants.Array))
             {
-                return null;
+                return lambdaBuilder(TypeHelper.GetArrayItemType(argumentType));
             }
 
-            return lambdaBuilder(TypeHelper.GetArrayItemType(arrayType));
+            return argumentType is ArrayType arrayType ? lambdaBuilder(arrayType.Item.Type) : null;
         }
 
         private static TypeSymbol CalculateIndexTypeOfArray(TypeSymbol arrayType) => TypeFactory.CreateIntegerType(
@@ -1672,7 +1685,7 @@ namespace Bicep.Core.Semantics.Namespaces
 
             return new(GetItemsReturnType(
                 keyType: TypeHelper.CreateTypeUnion(keyTypes),
-                valueType: TypeHelper.TryCollapseTypes(valueTypes) ?? LanguageConstants.Any));
+                valueType: TypeHelper.TryCollapseTypes(valueTypes, model.Features.ModuleParameterSecurityEnabled) ?? LanguageConstants.Any));
         }
 
         private static FunctionResult ObjectKeysResultBuilder(SemanticModel model, IDiagnosticWriter diagnostics, FunctionCallSyntaxBase functionCall, ImmutableArray<TypeSymbol> argumentTypes)

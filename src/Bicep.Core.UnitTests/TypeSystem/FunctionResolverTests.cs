@@ -12,6 +12,7 @@ using Bicep.Core.Text;
 using Bicep.Core.TypeSystem;
 using Bicep.Core.TypeSystem.Types;
 using Bicep.Core.UnitTests.Assertions;
+using Bicep.Core.UnitTests.Features;
 using Bicep.Core.UnitTests.Utils;
 using Bicep.Testing;
 using FluentAssertions;
@@ -26,8 +27,10 @@ namespace Bicep.Core.UnitTests.TypeSystem
     {
         private static readonly MockRepository Repository = new(MockBehavior.Strict);
 
-        private static SemanticModel CreateDummySemanticModel()
-            => TestCompiler.ForInMemoryCompilation().CompileWithoutRestore("").Compilation.GetEntrypointSemanticModel();
+        private static SemanticModel CreateDummySemanticModel(bool moduleParameterSecurity = false)
+            => TestCompiler.ForInMemoryCompilation()
+                .WithFeatureOverrides<FeatureProviderOverrides, OverriddenFeatureProviderFactory>(new FeatureProviderOverrides(ModuleParameterSecurityEnabled: moduleParameterSecurity))
+                .CompileWithoutRestore("").Compilation.GetEntrypointSemanticModel();
 
         [TestMethod]
         [DynamicData(nameof(GetExactMatchData), DynamicDataDisplayName = nameof(GetDisplayName))]
@@ -401,6 +404,58 @@ namespace Bicep.Core.UnitTests.TypeSystem
             returnType.Type.Should().Be(expectedReturn);
         }
 
+        // The length of a secret is not itself a secret, but only when moduleParameterSecurity is enabled.
+        [TestMethod]
+        [DynamicData(nameof(GetSecureLengthTestCases))]
+        public void LengthDropsSecurityOnlyWhenModuleParameterSecurityIsEnabled(TypeSymbol argumentType, TypeSymbol expectedWhenEnabled, TypeSymbol expectedWhenDisabled)
+        {
+            FunctionArgumentSyntax[] arguments = [new(TestSyntaxFactory.CreateVariableAccess("foo"))];
+
+            EvaluateFunction("length", [argumentType], arguments, moduleParameterSecurity: true).Type.Should().Be(expectedWhenEnabled);
+            EvaluateFunction("length", [argumentType], arguments, moduleParameterSecurity: false).Type.Should().Be(expectedWhenDisabled);
+        }
+
+        private static IEnumerable<object[]> GetSecureLengthTestCases()
+        {
+            const TypeSymbolValidationFlags Secure = TypeSymbolValidationFlags.IsSecure;
+            const TypeSymbolValidationFlags Loose = TypeSymbolValidationFlags.AllowLooseAssignment;
+            const TypeSymbolValidationFlags Warn = TypeSymbolValidationFlags.WarnOnTypeMismatch;
+
+            static object[] CreateRow(TypeSymbol argumentType, TypeSymbol expectedWhenEnabled, TypeSymbol expectedWhenDisabled)
+                => [argumentType, expectedWhenEnabled, expectedWhenDisabled];
+
+            return new[]
+            {
+                CreateRow(LanguageConstants.SecureString,
+                    TypeFactory.CreateIntegerType(0, validationFlags: Loose),
+                    TypeFactory.CreateIntegerType(0, validationFlags: Secure | Loose)),
+                CreateRow(TypeFactory.CreateStringType(5, 10, validationFlags: Secure | Warn),
+                    TypeFactory.CreateIntegerType(5, 10, Warn),
+                    TypeFactory.CreateIntegerType(5, 10, Secure | Warn)),
+                CreateRow(TypeFactory.CreateStringType(3, 3, validationFlags: Secure | Loose),
+                    TypeFactory.CreateIntegerLiteralType(3, Loose),
+                    TypeFactory.CreateIntegerLiteralType(3, Secure | Loose)),
+                CreateRow(LanguageConstants.SecureObject,
+                    TypeFactory.CreateIntegerType(0),
+                    TypeFactory.CreateIntegerType(0, validationFlags: Secure)),
+                CreateRow(new ObjectType("object",
+                    Secure | Warn,
+                    [
+                        new("prop", LanguageConstants.Any, TypePropertyFlags.Required),
+                        new("prop2", LanguageConstants.Any),
+                    ],
+                    null),
+                    TypeFactory.CreateIntegerType(1, 2, Warn),
+                    TypeFactory.CreateIntegerType(1, 2, Secure | Warn)),
+                CreateRow(new ObjectType("object",
+                    Secure | Loose,
+                    [new("prop", LanguageConstants.Any, TypePropertyFlags.Required)],
+                    null),
+                    TypeFactory.CreateIntegerLiteralType(1, Loose),
+                    TypeFactory.CreateIntegerLiteralType(1, Secure | Loose)),
+            };
+        }
+
         private static IEnumerable<object[]> GetLengthTestCases()
         {
             static object[] CreateRow(TypeSymbol argumentType, TypeSymbol returnType)
@@ -416,30 +471,9 @@ namespace Bicep.Core.UnitTests.TypeSystem
                     TypeFactory.CreateIntegerType(5, 10)),
                 CreateRow(TypeFactory.CreateStringType(20),
                     TypeFactory.CreateIntegerType(20)),
-                CreateRow(LanguageConstants.SecureString,
-                    TypeFactory.CreateIntegerType(0, validationFlags: TypeSymbolValidationFlags.AllowLooseAssignment)),
-                CreateRow(TypeFactory.CreateStringType(5, 10, validationFlags: TypeSymbolValidationFlags.IsSecure | TypeSymbolValidationFlags.WarnOnTypeMismatch),
-                    TypeFactory.CreateIntegerType(5, 10, TypeSymbolValidationFlags.WarnOnTypeMismatch)),
-                CreateRow(TypeFactory.CreateStringType(3, 3, validationFlags: TypeSymbolValidationFlags.IsSecure | TypeSymbolValidationFlags.AllowLooseAssignment),
-                    TypeFactory.CreateIntegerLiteralType(3, TypeSymbolValidationFlags.AllowLooseAssignment)),
 
                 CreateRow(LanguageConstants.Object,
                     TypeFactory.CreateIntegerType(0)),
-                CreateRow(LanguageConstants.SecureObject,
-                    TypeFactory.CreateIntegerType(0)),
-                CreateRow(new ObjectType("object",
-                    TypeSymbolValidationFlags.IsSecure | TypeSymbolValidationFlags.WarnOnTypeMismatch,
-                    [
-                        new("prop", LanguageConstants.Any, TypePropertyFlags.Required),
-                        new("prop2", LanguageConstants.Any),
-                    ],
-                    null),
-                    TypeFactory.CreateIntegerType(1, 2, TypeSymbolValidationFlags.WarnOnTypeMismatch)),
-                CreateRow(new ObjectType("object",
-                    TypeSymbolValidationFlags.IsSecure | TypeSymbolValidationFlags.AllowLooseAssignment,
-                    [new("prop", LanguageConstants.Any, TypePropertyFlags.Required)],
-                    null),
-                    TypeFactory.CreateIntegerLiteralType(1, TypeSymbolValidationFlags.AllowLooseAssignment)),
                 CreateRow(new ObjectType("object",
                     default,
                     new NamedTypeProperty[] { new("prop", LanguageConstants.Any, TypePropertyFlags.Required) },
@@ -711,13 +745,13 @@ namespace Bicep.Core.UnitTests.TypeSystem
             };
         }
 
-        private FunctionResult EvaluateFunction(string functionName, IList<TypeSymbol> argumentTypes, FunctionArgumentSyntax[] arguments)
+        private FunctionResult EvaluateFunction(string functionName, IList<TypeSymbol> argumentTypes, FunctionArgumentSyntax[] arguments, bool moduleParameterSecurity = false)
         {
             var matches = GetMatches(functionName, argumentTypes, out _, out _);
             matches.Should().HaveCount(1);
 
             return matches.Single().ResultBuilder(
-                CreateDummySemanticModel(),
+                CreateDummySemanticModel(moduleParameterSecurity),
                 Repository.Create<IDiagnosticWriter>().Object,
                 SyntaxFactory.CreateFunctionCall(functionName, arguments),
                 [.. argumentTypes]);

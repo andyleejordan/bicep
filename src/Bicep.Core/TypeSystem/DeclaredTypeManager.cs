@@ -43,7 +43,9 @@ namespace Bicep.Core.TypeSystem
             this.resourceDerivedTypeResolver = new(binder);
             // Only module parameters keep a resource-derived type's @secure(). Outputs and parameter assignments also
             // feed template emission, so they keep resolving to the plain schema type.
-            this.moduleParameterTypeResolver = new(binder, preserveSecurity: true);
+            this.moduleParameterTypeResolver = features.ModuleParameterSecurityEnabled
+                ? new(binder, preserveSecurity: true)
+                : resourceDerivedTypeResolver;
             this.typeCycles = new(() => CyclicTypeCheckVisitor.FindCycles(
                 binder,
                 syntax => TryGetTypeFromTypeSyntax(syntax)?.Type));

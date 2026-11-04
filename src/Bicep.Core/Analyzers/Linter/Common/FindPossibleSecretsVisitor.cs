@@ -16,6 +16,7 @@ namespace Bicep.Core.Analyzers.Linter.Common
         public record PossibleSecret(SyntaxBase Syntax, string FoundMessage) { }
 
         private readonly SemanticModel semanticModel;
+        private readonly bool ignoreNonRevealingOperations;
         private readonly List<PossibleSecret> possibleSecrets = new();
         private uint trailingAccessExpressions = 0;
 
@@ -33,6 +34,9 @@ namespace Bicep.Core.Analyzers.Linter.Common
         private FindPossibleSecretsVisitor(SemanticModel model)
         {
             this.semanticModel = model;
+
+            // Part of the moduleParameterSecurity experimental feature: with it off, every operation on a secret counts.
+            this.ignoreNonRevealingOperations = model.Features.ModuleParameterSecurityEnabled;
         }
 
         public override void VisitVariableAccessSyntax(VariableAccessSyntax syntax)
@@ -134,12 +138,14 @@ namespace Bicep.Core.Analyzers.Linter.Common
         }
 
         private bool DoesNotRevealSecrets(FunctionCallSyntaxBase syntax)
-            => semanticModel.GetSymbolInfo(syntax) is FunctionSymbol function &&
+            => ignoreNonRevealingOperations &&
+                semanticModel.GetSymbolInfo(syntax) is FunctionSymbol function &&
                 (function.FunctionFlags & (FunctionFlags.DoesNotRevealSecrets | FunctionFlags.IsArgumentValueIndependent)) != 0;
 
         public override void VisitBinaryOperationSyntax(BinaryOperationSyntax syntax)
         {
-            if (syntax.Operator is BinaryOperator.Equals or BinaryOperator.NotEquals or
+            if (ignoreNonRevealingOperations &&
+                syntax.Operator is BinaryOperator.Equals or BinaryOperator.NotEquals or
                 BinaryOperator.EqualsInsensitive or BinaryOperator.NotEqualsInsensitive or
                 BinaryOperator.LessThan or BinaryOperator.LessThanOrEqual or
                 BinaryOperator.GreaterThan or BinaryOperator.GreaterThanOrEqual or
@@ -153,7 +159,7 @@ namespace Bicep.Core.Analyzers.Linter.Common
 
         public override void VisitUnaryOperationSyntax(UnaryOperationSyntax syntax)
         {
-            if (syntax.Operator is not UnaryOperator.Not)
+            if (!ignoreNonRevealingOperations || syntax.Operator is not UnaryOperator.Not)
             {
                 base.VisitUnaryOperationSyntax(syntax);
             }

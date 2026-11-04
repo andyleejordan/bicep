@@ -40,9 +40,9 @@ public class TypeHelperTests
         ObjectType empty = new("empty", default, [], new(LanguageConstants.Any, TypePropertyFlags.FallbackProperty));
         ObjectType open = new("open", default, [], new(LanguageConstants.String));
 
-        TypeHelper.TryCollapseTypes([secure, empty]).Should().BeOfType<ObjectType>().Subject
+        TypeHelper.TryCollapseTypes([secure, empty], preserveSecurity: true).Should().BeOfType<ObjectType>().Subject
             .Properties["value"].TypeReference.Type.Should().BeSameAs(LanguageConstants.SecureString);
-        TypeHelper.TryCollapseTypes([secure, open]).Should().BeOfType<ObjectType>().Subject
+        TypeHelper.TryCollapseTypes([secure, open], preserveSecurity: true).Should().BeOfType<ObjectType>().Subject
             .Properties["value"].TypeReference.Type.Should().BeOfType<UnionType>().Subject.Members.Select(member => member.Type)
             .Should().BeEquivalentTo([LanguageConstants.String, LanguageConstants.SecureString]);
     }

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using Bicep.Core.Analyzers.Linter.Rules;
+using Bicep.Core.UnitTests.Features;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests
@@ -9,9 +10,9 @@ namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests
     [TestClass]
     public class ProtectCommandToExecuteSecretsRuleTests : LinterRuleTestsBase
     {
-        private void CompileAndTest(string text, string[] expectedMessages)
+        private void CompileAndTest(string text, string[] expectedMessages, FeatureProviderOverrides? featureOverrides = null)
         {
-            AssertLinterRuleDiagnostics(ProtectCommandToExecuteSecretsRule.Code, text, expectedMessages);
+            AssertLinterRuleDiagnostics(ProtectCommandToExecuteSecretsRule.Code, text, expectedMessages, new Options(FeatureOverrides: featureOverrides));
         }
 
         [TestMethod]
@@ -33,7 +34,26 @@ namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests
                     }
                   }
                 }
-                """, []);
+                """, [], ModuleParameterSecurityOn);
+
+        // The allow-list for operations that don't reveal a secret is part of the moduleParameterSecurity feature.
+        [TestMethod]
+        public void Secret_length_still_requires_protected_settings_when_module_parameter_security_is_disabled()
+            => CompileAndTest("""
+                @secure()
+                param secret string
+                resource extension 'Microsoft.Compute/virtualMachines/extensions@2021-04-01' = {
+                  name: 'vm/script'
+                  location: 'westus'
+                  properties: {
+                    publisher: 'Microsoft.Compute'
+                    type: 'CustomScriptExtension'
+                    settings: {
+                      commandToExecute: 'echo ${length(secret)}'
+                    }
+                  }
+                }
+                """, ["[10] Use protectedSettings for commandToExecute secrets. Found possible secret: secure value 'secret'"]);
 
         // Modified from https://docs.microsoft.com/en-us/azure/azure-arc/servers/manage-vm-extensions-template#template-file-for-windows-1
         // CustomScriptExtension

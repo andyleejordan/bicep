@@ -40,6 +40,9 @@ public class LinterRuleTestsBase
         Default = LineNumber,
     }
 
+    // Turns on the moduleParameterSecurity experimental feature, which changes what the secret-aware rules report.
+    protected static readonly FeatureProviderOverrides ModuleParameterSecurityOn = new(ModuleParameterSecurityEnabled: true);
+
     public record Options(
         OnCompileErrors OnCompileErrors = OnCompileErrors.Default,
         IncludePosition IncludePosition = IncludePosition.Default,

@@ -8,12 +8,16 @@ namespace Bicep.Core.TypeSystem;
 
 internal static class TypeCollapser
 {
-    internal static TypeSymbol? TryCollapse(TypeSymbol type) => type switch
+    /// <param name="preserveSecurity">
+    /// When true, collapsing never merges secure and non-secure members, and never widens a property to 'any' because
+    /// another member has implicit additional properties, so that a secure value stays recognizable as one.
+    /// </param>
+    internal static TypeSymbol? TryCollapse(TypeSymbol type, bool preserveSecurity = false) => type switch
     {
         // it doesn't really make sense to collapse 'never' or 'any'
         _ when type.TypeKind == TypeKind.Never => null,
         AnyType => null,
-        UnionType unionType => TryCollapse(unionType),
+        UnionType unionType => TryCollapse(unionType, preserveSecurity),
         _ => type,
     };
 
@@ -22,15 +26,16 @@ internal static class TypeCollapser
     /// type can define its collapsing rules separately and we can choose which ruleset to use based on the first 1-2
     /// union members.
     /// </remarks>
-    private static TypeSymbol? TryCollapse(UnionType unionType)
+    private static TypeSymbol? TryCollapse(UnionType unionType, bool preserveSecurity)
     {
-        if (Flatten(unionType).Where(member => member is not NullType)
-            .Select(member => member.ValidationFlags.HasFlag(TypeSymbolValidationFlags.IsSecure)).Distinct().Skip(1).Any())
+        if (preserveSecurity &&
+            Flatten(unionType).Where(member => member is not NullType)
+                .Select(member => member.ValidationFlags.HasFlag(TypeSymbolValidationFlags.IsSecure)).Distinct().Skip(1).Any())
         {
             return null;
         }
 
-        var collapseState = UnionCollapseState.Initialize();
+        var collapseState = UnionCollapseState.Initialize(preserveSecurity);
         foreach (var member in Flatten(unionType))
         {
             collapseState = collapseState.Push(member);
@@ -51,12 +56,12 @@ internal static class TypeCollapser
 
         TypeSymbol? TryCollapse();
 
-        public static UnionCollapseState Initialize() => new InitialState();
+        public static UnionCollapseState Initialize(bool preserveSecurity) => new InitialState(preserveSecurity);
 
         private static TypeSymbol CreateTypeUnion(IEnumerable<TypeSymbol> toUnion, bool nullable)
             => TypeHelper.CreateTypeUnion(nullable ? toUnion.Append(LanguageConstants.Null) : toUnion);
 
-        private class InitialState : UnionCollapseState
+        private class InitialState(bool preserveSecurity) : UnionCollapseState
         {
             private bool nullable = false;
 
@@ -73,8 +78,8 @@ internal static class TypeCollapser
                 BooleanType @bool => new BoolCollapse(@bool, nullable),
                 TupleType tuple => new ArrayCollapse(tuple, nullable),
                 ArrayType array => new ArrayCollapse(array, nullable),
-                ObjectType @object => new ObjectCollapse(nullable).Push(@object),
-                DiscriminatedObjectType discriminatedObjectType => new ObjectCollapse(nullable).Push(discriminatedObjectType),
+                ObjectType @object => new ObjectCollapse(nullable, preserveSecurity).Push(@object),
+                DiscriminatedObjectType discriminatedObjectType => new ObjectCollapse(nullable, preserveSecurity).Push(discriminatedObjectType),
                 AnyType => CollapsesToAny.Instance,
                 _ => Uncollapsable.Instance,
             };
@@ -354,12 +359,14 @@ internal static class TypeCollapser
         private class ObjectCollapse : UnionCollapseState
         {
             private readonly DiscriminatedObjectTypeBuilder discriminatedObjectTypeBuilder = new();
+            private readonly bool preserveSecurity;
             private TypeSymbolValidationFlags flags = TypeSymbolValidationFlags.Default;
             private bool nullable;
 
-            internal ObjectCollapse(bool nullable)
+            internal ObjectCollapse(bool nullable, bool preserveSecurity)
             {
                 this.nullable = nullable;
+                this.preserveSecurity = preserveSecurity;
             }
 
             public TypeSymbol? TryCollapse()
@@ -407,7 +414,7 @@ internal static class TypeCollapser
                             // value. Make sure it is not flagged as required.
                             propertyFlags &= ~TypePropertyFlags.Required;
 
-                            if (member.HasExplicitAdditionalPropertiesType &&
+                            if ((!preserveSecurity || member.HasExplicitAdditionalPropertiesType) &&
                                 member.AdditionalProperties?.TypeReference.Type is { } addlPropertiesType)
                             {
                                 possibleTypes.Add(addlPropertiesType);
@@ -422,12 +429,12 @@ internal static class TypeCollapser
 
                     properties.Add(new(
                         declaredPropertyName,
-                        TypeCollapser.TryCollapse(propertyTypeUnion) is { } collapsed ? collapsed : propertyTypeUnion,
+                        TypeCollapser.TryCollapse(propertyTypeUnion, preserveSecurity) is { } collapsed ? collapsed : propertyTypeUnion,
                         propertyFlags));
                     structuralNameBuilder.AppendProperty(declaredPropertyName, properties[^1].TypeReference.Type.Name);
                 }
 
-                var (additionalPropertiesType, additionalPropertiesFlags, additionalPropertiesDescription) = GetAdditionalPropertiesType(members);
+                var (additionalPropertiesType, additionalPropertiesFlags, additionalPropertiesDescription) = GetAdditionalPropertiesType(members, preserveSecurity);
                 if (additionalPropertiesType is not null &&
                     !additionalPropertiesFlags.HasFlag(TypePropertyFlags.FallbackProperty))
                 {
@@ -443,7 +450,8 @@ internal static class TypeCollapser
             }
 
             private static (TypeSymbol? type, TypePropertyFlags flags, string? description) GetAdditionalPropertiesType(
-                IEnumerable<ObjectType> objects)
+                IEnumerable<ObjectType> objects,
+                bool preserveSecurity)
             {
                 var noneHaveAdditionalPropertiesType = true;
                 var anyHaveNullAdditionalPropertiesType = false;
@@ -490,7 +498,7 @@ internal static class TypeCollapser
                     propertyFlags |= TypePropertyFlags.FallbackProperty;
                 }
 
-                return (TypeHelper.CollapseOrCreateTypeUnion(possibleTypes), propertyFlags, propertyDescription);
+                return (TypeHelper.CollapseOrCreateTypeUnion(possibleTypes, preserveSecurity), propertyFlags, propertyDescription);
             }
 
             public UnionCollapseState Push(ITypeReference memberType)

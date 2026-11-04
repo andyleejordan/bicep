@@ -3,6 +3,7 @@
 
 using Bicep.Core.Analyzers.Linter.Rules;
 using Bicep.Core.Configuration;
+using Bicep.Core.UnitTests.Features;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests
@@ -10,9 +11,9 @@ namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests
     [TestClass]
     public class OutputsShouldNotContainSecretsRuleTests : LinterRuleTestsBase
     {
-        private void CompileAndTest(string text, OnCompileErrors onCompileErrors, string[] expectedMessages, Func<IBicepConfiguration, IBicepConfiguration>? configurationPatchFunc = null)
+        private void CompileAndTest(string text, OnCompileErrors onCompileErrors, string[] expectedMessages, Func<IBicepConfiguration, IBicepConfiguration>? configurationPatchFunc = null, FeatureProviderOverrides? featureOverrides = null)
         {
-            AssertLinterRuleDiagnostics(OutputsShouldNotContainSecretsRule.Code, text, expectedMessages, new Options(onCompileErrors, IncludePosition.None, ConfigurationPatch: configurationPatchFunc));
+            AssertLinterRuleDiagnostics(OutputsShouldNotContainSecretsRule.Code, text, expectedMessages, new Options(onCompileErrors, IncludePosition.None, ConfigurationPatch: configurationPatchFunc, FeatureOverrides: featureOverrides));
         }
 
         const string description = "Outputs should not contain secrets.";
@@ -34,7 +35,45 @@ namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests
                 output n int = {{expression}}
                 output indirect int = values.count
                 output text string = '${count}'
-                """, OnCompileErrors.IncludeErrors, []);
+                """, OnCompileErrors.IncludeErrors, [], featureOverrides: ModuleParameterSecurityOn);
+
+        // The allow-list for operations that don't reveal a secret is part of the moduleParameterSecurity feature.
+        [TestMethod]
+        public void Secret_length_is_still_reported_when_module_parameter_security_is_disabled()
+            => CompileAndTest("""
+                @secure()
+                param secret string
+                output n int = length(secret)
+                """, OnCompileErrors.IncludeErrors, [$"{description} Found possible secret: secure value 'secret'"]);
+
+        [TestMethod]
+        [DataRow("empty(secret)", "bool")]
+        [DataRow("contains(secureObj, 'flag')", "bool")]
+        [DataRow("uniqueString(secret)", "string")]
+        [DataRow("guid(secret)", "string")]
+        [DataRow("nameof(secret)", "string")]
+        [DataRow("sys.length(secret)", "int")]
+        [DataRow("secret == 'x'", "bool")]
+        [DataRow("secret !~ 'x'", "bool")]
+        [DataRow("secret >= 'x'", "bool")]
+        [DataRow("secureObj.flag && enabled", "bool")]
+        [DataRow("secureObj.flag || enabled", "bool")]
+        [DataRow("!secureObj.flag", "bool")]
+        public void Operations_that_do_not_reveal_a_secret_are_allowed_only_with_module_parameter_security(string expression, string type)
+        {
+            var text = $$"""
+                @secure()
+                param secret string
+                @secure()
+                param secureObj {
+                  flag: bool
+                }
+                param enabled bool
+                output result {{type}} = {{expression}}
+                """;
+            AssertLinterRuleDiagnostics(OutputsShouldNotContainSecretsRule.Code, text, 0, new Options(OnCompileErrors.IncludeErrors, IncludePosition.None, FeatureOverrides: ModuleParameterSecurityOn));
+            AssertLinterRuleDiagnostics(OutputsShouldNotContainSecretsRule.Code, text, 1, new Options(OnCompileErrors.IncludeErrors, IncludePosition.None));
+        }
 
         [DataRow(@" // This is a failing example from the docs
             @secure()

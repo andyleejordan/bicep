@@ -228,5 +228,20 @@ param param2 string = param1
             AssertLinterRuleDiagnostics(SecureParameterDefaultRule.Code, text, diagnosticCount);
         }
 
+        // Interpolating a secure value keeps it secure through a type inference change that the moduleParameterSecurity feature turns on.
+        [DataRow(true, 0)]
+        [DataRow(false, 1)]
+        [TestMethod]
+        public void InterpolatedSecureParameter_IsSecureOnlyWithModuleParameterSecurity(bool enabled, int diagnosticCount)
+        {
+            AssertLinterRuleDiagnostics(SecureParameterDefaultRule.Code, @"
+@secure()
+param param1 string
+
+@secure()
+param param2 string = '${param1}!'
+", diagnosticCount, new Options(FeatureOverrides: new(ModuleParameterSecurityEnabled: enabled)));
+        }
+
     }
 }
