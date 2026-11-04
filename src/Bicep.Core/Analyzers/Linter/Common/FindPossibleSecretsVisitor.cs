@@ -75,6 +75,11 @@ namespace Bicep.Core.Analyzers.Linter.Common
 
         public override void VisitFunctionCallSyntax(FunctionCallSyntax syntax)
         {
+            if (DoesNotRevealSecrets(syntax))
+            {
+                return;
+            }
+
             // Look for usage of list*() stand-alone function, e.g.:
             //
             //   output badResult object = listKeys(resourceId('Microsoft.Storage/storageAccounts', 'storageName'), '2021-02-01')
@@ -92,6 +97,11 @@ namespace Bicep.Core.Analyzers.Linter.Common
 
         public override void VisitInstanceFunctionCallSyntax(InstanceFunctionCallSyntax syntax)
         {
+            if (DoesNotRevealSecrets(syntax))
+            {
+                return;
+            }
+
             if (syntax.Name.IdentifierName.StartsWithOrdinalInsensitively(LanguageConstants.ListFunctionPrefix))
             {
                 bool found = false;
@@ -121,6 +131,32 @@ namespace Bicep.Core.Analyzers.Linter.Common
             }
 
             base.VisitInstanceFunctionCallSyntax(syntax);
+        }
+
+        private bool DoesNotRevealSecrets(FunctionCallSyntaxBase syntax)
+            => semanticModel.GetSymbolInfo(syntax) is FunctionSymbol function &&
+                (function.FunctionFlags & (FunctionFlags.DoesNotRevealSecrets | FunctionFlags.IsArgumentValueIndependent)) != 0;
+
+        public override void VisitBinaryOperationSyntax(BinaryOperationSyntax syntax)
+        {
+            if (syntax.Operator is BinaryOperator.Equals or BinaryOperator.NotEquals or
+                BinaryOperator.EqualsInsensitive or BinaryOperator.NotEqualsInsensitive or
+                BinaryOperator.LessThan or BinaryOperator.LessThanOrEqual or
+                BinaryOperator.GreaterThan or BinaryOperator.GreaterThanOrEqual or
+                BinaryOperator.LogicalAnd or BinaryOperator.LogicalOr)
+            {
+                return;
+            }
+
+            base.VisitBinaryOperationSyntax(syntax);
+        }
+
+        public override void VisitUnaryOperationSyntax(UnaryOperationSyntax syntax)
+        {
+            if (syntax.Operator is not UnaryOperator.Not)
+            {
+                base.VisitUnaryOperationSyntax(syntax);
+            }
         }
     }
 }

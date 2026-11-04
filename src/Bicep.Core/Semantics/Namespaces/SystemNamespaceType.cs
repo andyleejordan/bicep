@@ -240,8 +240,8 @@ namespace Bicep.Core.Semantics.Namespaces
                 yield return new FunctionOverloadBuilder("length")
                     .WithReturnResultBuilder(TryDeriveLiteralReturnType("length", (_, _, _, argumentTypes) => new(argumentTypes.FirstOrDefault() switch
                     {
-                        StringType @string => TypeFactory.CreateIntegerType(@string.MinLength ?? 0, @string.MaxLength, @string.ValidationFlags),
-                        ObjectType @object => TypeFactory.CreateIntegerType(MinLength(@object), MaxLength(@object), @object.ValidationFlags),
+                        StringType @string => TypeFactory.CreateIntegerType(@string.MinLength ?? 0, @string.MaxLength, @string.ValidationFlags & ~TypeSymbolValidationFlags.IsSecure),
+                        ObjectType @object => TypeFactory.CreateIntegerType(MinLength(@object), MaxLength(@object), @object.ValidationFlags & ~TypeSymbolValidationFlags.IsSecure),
                         DiscriminatedObjectType discriminatedObject => TypeFactory.CreateIntegerType(
                             minValue: discriminatedObject.UnionMembersByKey.Values.Min(MinLength),
                             maxValue: discriminatedObject.UnionMembersByKey.Values
@@ -251,6 +251,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     })), LanguageConstants.Int)
                     .WithGenericDescription("Returns the number of characters in a string, elements in an array, or root-level properties in an object.")
                     .WithRequiredParameter("arg", TypeHelper.CreateTypeUnion(LanguageConstants.String, LanguageConstants.Object), "The string to use for getting the number of characters or the object to use for getting the number of root-level properties.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("length")
@@ -264,6 +265,7 @@ namespace Bicep.Core.Semantics.Namespaces
                         LanguageConstants.Int)
                     .WithGenericDescription("Returns the number of characters in a string, elements in an array, or root-level properties in an object.")
                     .WithRequiredParameter("arg", LanguageConstants.Array, "The array to use for getting the number of elements.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("split")
@@ -349,6 +351,7 @@ namespace Bicep.Core.Semantics.Namespaces
                         TypeFactory.CreateStringType(minLength: UniqueStringHashLength, maxLength: UniqueStringHashLength))
                     .WithGenericDescription("Creates a deterministic hash string based on the values provided as parameters. The returned value is 13 characters long.")
                     .WithVariableParameter("arg", LanguageConstants.String, minimumCount: 1, "The value used in the hash function to create a unique string.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("guid")
@@ -356,6 +359,7 @@ namespace Bicep.Core.Semantics.Namespaces
                         TypeFactory.CreateStringType(minLength: GuidLength, maxLength: GuidLength))
                     .WithGenericDescription("Creates a value in the format of a globally unique identifier based on the values provided as parameters.")
                     .WithVariableParameter("arg", LanguageConstants.String, minimumCount: 1, "The value used in the hash function to create the GUID.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("trim")
@@ -619,6 +623,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithReturnResultBuilder(TryDeriveLiteralReturnType("empty", LanguageConstants.Bool), LanguageConstants.Bool)
                     .WithGenericDescription("Determines if an array, object, or string is empty.")
                     .WithRequiredParameter("itemToTest", TypeHelper.CreateTypeUnion(LanguageConstants.Null, LanguageConstants.Object, LanguageConstants.Array, LanguageConstants.String), "The value to check if it is empty.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("contains")
@@ -627,6 +632,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithDescription("Checks whether an object contains a property. The property name comparison is case-insensitive.")
                     .WithRequiredParameter("object", LanguageConstants.Object, "The object")
                     .WithRequiredParameter("propertyName", LanguageConstants.String, "The property name.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("contains")
@@ -635,6 +641,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithDescription("Checks whether an array contains a value. For arrays of simple values, exact match is done (case-sensitive for strings). For arrays of objects or arrays a deep comparison is done.")
                     .WithRequiredParameter("array", LanguageConstants.Array, "The array")
                     .WithRequiredParameter("itemToFind", LanguageConstants.Any, "The value to find.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("contains")
@@ -643,6 +650,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithDescription("Checks whether a string contains a substring. The string comparison is case-sensitive.")
                     .WithRequiredParameter("string", LanguageConstants.String, "The string.")
                     .WithRequiredParameter("itemToFind", LanguageConstants.String, "The value to find.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("intersection")
@@ -751,6 +759,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Returns the first position of a value within a string. The comparison is case-insensitive.")
                     .WithRequiredParameter("stringToSearch", LanguageConstants.String, "The value that contains the item to find.")
                     .WithRequiredParameter("stringToFind", LanguageConstants.String, "The value to find.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("indexOf")
@@ -758,6 +767,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Returns the first position of a value within an array. For arrays of simple values, exact match is done (case-sensitive for strings). For arrays of objects or arrays a deep comparison is done.")
                     .WithRequiredParameter("array", LanguageConstants.Array, "The array that contains the item to find.")
                     .WithRequiredParameter("itemToFind", LanguageConstants.Any, "The value to find.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("lastIndexOf")
@@ -765,6 +775,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Returns the last position of a value within a string. The comparison is case-insensitive.")
                     .WithRequiredParameter("stringToSearch", LanguageConstants.String, "The value that contains the item to find.")
                     .WithRequiredParameter("stringToFind", LanguageConstants.String, "The value to find.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("lastIndexOf")
@@ -772,6 +783,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Returns the last position of a value within an array. For arrays of simple values, exact match is done (case-sensitive for strings). For arrays of objects or arrays a deep comparison is done.")
                     .WithRequiredParameter("array", LanguageConstants.Array, "The array that contains the item to find.")
                     .WithRequiredParameter("itemToFind", LanguageConstants.Any, "The value to find.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("startsWith")
@@ -779,6 +791,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Determines whether a string starts with a value. The comparison is case-insensitive.")
                     .WithRequiredParameter("stringToSearch", LanguageConstants.String, "The value that contains the item to find.")
                     .WithRequiredParameter("stringToFind", LanguageConstants.String, "The value to find.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("endsWith")
@@ -786,6 +799,7 @@ namespace Bicep.Core.Semantics.Namespaces
                     .WithGenericDescription("Determines whether a string ends with a value. The comparison is case-insensitive.")
                     .WithRequiredParameter("stringToSearch", LanguageConstants.String, "The value that contains the item to find.")
                     .WithRequiredParameter("stringToFind", LanguageConstants.String, "The value to find.")
+                    .WithFlags(FunctionFlags.DoesNotRevealSecrets)
                     .Build();
 
                 yield return new FunctionOverloadBuilder("distinct")
