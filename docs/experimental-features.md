@@ -49,6 +49,33 @@ Enables Bicep to run deployments locally, so that you can run Bicep extensions w
 Moves defining extension configurations to the module level rather than from within a template. The feature also
 includes enhancements for Deployment stacks extensibility integration. This feature is not ready for use.
 
+### `moduleParameterSecurity`
+
+Checks that secure values stay secure when they are passed to module parameters, so a missing `@secure()` on either side of a module call can't quietly put a secret in the deployment history. With this feature enabled:
+
+- The `use-secure-value-for-secure-inputs` linter rule also warns when a module parameter declared `@secure()` is given a value that may not be secure, such as a plain `param`, a `var`, or a literal. It continues to check resource properties as before.
+- The `no-secure-values-in-insecure-inputs` linter rule warns when a secure value is passed to a module parameter that isn't declared `@secure()`.
+
+```bicep
+@secure()
+param adminPassword string
+
+module vm 'vm.bicep' = {
+  params: {
+    adminPassword: adminPassword // OK, `adminPassword` is secure
+    domainJoinPassword: 'hunter2' // Warning if `domainJoinPassword` is `@secure()` in vm.bicep
+  }
+}
+```
+
+These checks are only as good as the types the compiler infers for the values being passed, so the feature also changes type inference in every Bicep file, and can add or remove compiler diagnostics in files that compiled before:
+
+- Iterating over a nullable or union-typed array, or passing one to an array function or lambda function, keeps the element type instead of falling back to `any`.
+- Accessing a property on a value with a discriminated object type is typed instead of `any`, so a property that no variant defines is reported.
+- `union()` of objects or arrays returns the merged type instead of a plain `object` or `array`.
+- `@secure()` is kept through string interpolation, the `?:` operator and union types, and on module parameters whose types are derived from a resource, such as `resourceInput<...>`.
+- Functions that don't reveal their arguments (`length`, `empty`, `contains`, `startsWith`, `endsWith`, `indexOf`, `lastIndexOf`, `uniqueString` and `guid`), comparisons and logical operators no longer count as exposing a secret. This also removes some warnings from `outputs-should-not-contain-secrets` and `use-protected-settings-for-command-to-execute-secrets`.
+
 ### `ociEnabled`
 
 Enables publishing and restoring Bicep modules and extensions to and from non-Azure OCI-compliant registries (e.g. GitHub Container Registry, Docker Hub, self-hosted registries) using the ORAS transport. For more information, see [Using OCI Registries](./experimental/oci-registries.md).

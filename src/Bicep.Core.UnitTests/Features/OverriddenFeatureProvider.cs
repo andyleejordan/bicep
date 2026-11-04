@@ -53,4 +53,6 @@ public class OverriddenFeatureProvider : IFeatureProvider
 
     public bool AzExtensionConfigEnabled => overrides.AzExtensionConfigEnabled ?? features.AzExtensionConfigEnabled;
 
+    public bool ModuleParameterSecurityEnabled => overrides.ModuleParameterSecurityEnabled ?? features.ModuleParameterSecurityEnabled;
+
 }

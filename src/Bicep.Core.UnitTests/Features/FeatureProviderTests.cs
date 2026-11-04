@@ -68,4 +68,29 @@ public class FeatureProviderTests
         subDirFeatures.SymbolicNameCodegenEnabled.Should().BeTrue();
     }
 
+    [TestMethod]
+    public void ModuleParameterSecurity_IsOffUnlessEnabledViaBicepConfig()
+    {
+        var fileSet = InMemoryTestFileSet.Create(
+            ("repo/bicepconfig.json", """
+                {
+                  "experimentalFeaturesEnabled": {}
+                }
+                """),
+            ("repo/enabled/bicepconfig.json", """
+                {
+                  "experimentalFeaturesEnabled": {
+                    "moduleParameterSecurity": true
+                  }
+                }
+                """));
+
+        var configManager = new BicepConfigurationManager(fileSet.FileExplorer, BicepTestConstants.TestCloudConfigurationTrustPolicy);
+        var fpm = new FeatureProviderFactory(configManager, fileSet.FileExplorer);
+
+        fpm.GetFeatureProvider(fileSet.GetUri("main.bicep")).ModuleParameterSecurityEnabled.Should().BeFalse();
+        fpm.GetFeatureProvider(fileSet.GetUri("repo/main.bicep")).ModuleParameterSecurityEnabled.Should().BeFalse();
+        fpm.GetFeatureProvider(fileSet.GetUri("repo/enabled/main.bicep")).ModuleParameterSecurityEnabled.Should().BeTrue();
+    }
+
 }

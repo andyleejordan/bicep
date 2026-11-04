@@ -1046,6 +1046,10 @@
         "azExtensionConfig": {
           "type": "boolean",
           "description": "Enables configuration for the built-in 'az' extension to register additional resource providers at the start of a deployment. (Note: This feature will not work until the backend service support has been deployed) See https://aka.ms/bicep/experimental-features#azextensionconfig"
+        },
+        "moduleParameterSecurity": {
+          "type": "boolean",
+          "description": "Checks that secure values stay secure when they are passed to module parameters, and turns on the type inference changes that these checks depend on. See https://aka.ms/bicep/experimental-features#moduleparametersecurity"
         }
       },
       "additionalProperties": false
