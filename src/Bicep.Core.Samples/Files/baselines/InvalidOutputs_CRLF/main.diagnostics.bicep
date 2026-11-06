@@ -195,7 +195,6 @@ output bad int = true && !4
 //@[25:27) [BCP044 (Error)] Cannot apply operator "!" to operand of type "4". (bicep https://aka.ms/bicep/core-diagnostics#BCP044) |!4|
 output deeper bool = true ? -true : (14 && 's') + 10
 //@[28:33) [BCP044 (Error)] Cannot apply operator "-" to operand of type "true". (bicep https://aka.ms/bicep/core-diagnostics#BCP044) |-true|
-//@[37:46) [BCP045 (Error)] Cannot apply operator "&&" to operands of type "14" and "'s'". (bicep https://aka.ms/bicep/core-diagnostics#BCP045) |14 && 's'|
 
 output myOutput string = 'hello'
 var attemptToReferenceAnOutput = myOutput

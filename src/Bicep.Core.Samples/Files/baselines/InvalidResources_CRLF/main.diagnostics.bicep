@@ -204,7 +204,6 @@ resource foo 'Microsoft.Foo/foos@2020-02-02-alpha'= {
 resource bar 'Microsoft.Foo/foos@2020-02-02-alpha' = {
 //@[013:050) [BCP081 (Warning)] Resource type "Microsoft.Foo/foos@2020-02-02-alpha" does not have types available. Bicep is unable to validate resource properties prior to deployment, but this will not block the resource from being deployed. (bicep https://aka.ms/bicep/core-diagnostics#BCP081) |'Microsoft.Foo/foos@2020-02-02-alpha'|
   name: true ? 's' : 'a' + 1
-//@[021:028) [BCP045 (Error)] Cannot apply operator "+" to operands of type "'a'" and "1". (bicep https://aka.ms/bicep/core-diagnostics#BCP045) |'a' + 1|
   properties: {
     x: foo()
 //@[007:010) [BCP059 (Error)] The name "foo" is not a function. (bicep https://aka.ms/bicep/core-diagnostics#BCP059) |foo|

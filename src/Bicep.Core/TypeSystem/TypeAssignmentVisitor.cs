@@ -67,7 +67,33 @@ namespace Bicep.Core.TypeSystem
             // ensure we've visited all of the syntax nodes
             Visit(this.binder.FileSymbol.Syntax);
 
-            return assignedTypes.Values.SelectMany(x => x.Diagnostics);
+            var deadBranchNodes = GetDeadTernaryBranchNodes();
+            return assignedTypes
+                .Where(x => !deadBranchNodes.Contains(x.Key))
+                .SelectMany(x => x.Value.Diagnostics)
+                .Concat(GetDeadBranchBindingDiagnostics(deadBranchNodes));
+        }
+
+        private IEnumerable<IDiagnostic> GetDeadBranchBindingDiagnostics(HashSet<SyntaxBase> deadBranchNodes)
+        {
+            foreach (var (syntax, symbol) in binder.Bindings)
+            {
+                if (!deadBranchNodes.Contains(syntax))
+                {
+                    continue;
+                }
+
+                var diagnostics = symbol is ErrorSymbol error
+                    ? error.GetDiagnostics()
+                    : syntax is VariableAccessSyntax
+                        ? typeManager.GetTypeInfo(syntax).GetDiagnostics()
+                        : CheckForCyclicError(syntax)?.GetDiagnostics() ?? [];
+
+                foreach (var diagnostic in diagnostics)
+                {
+                    yield return diagnostic;
+                }
+            }
         }
 
         public FunctionOverload? GetMatchedFunctionOverload(FunctionCallSyntaxBase syntax)
@@ -221,6 +247,21 @@ namespace Bicep.Core.TypeSystem
             VariableBlockSyntax block when this.binder.GetParent(block) is ForSyntax forParent => forParent,
             var parent => throw new InvalidOperationException($"{syntax.GetType().Name} at {syntax.Span} has an unexpected parent of type {parent?.GetType().Name}"),
         };
+
+        private HashSet<SyntaxBase> GetDeadTernaryBranchNodes()
+        {
+            HashSet<SyntaxBase> nodes = [];
+            foreach (var ternary in SyntaxAggregator.AggregateByType<TernaryOperationSyntax>(binder.FileSymbol.Syntax))
+            {
+                if (typeManager.GetTypeInfo(ternary.ConditionExpression) is BooleanLiteralType condition)
+                {
+                    var branch = condition.Value ? ternary.FalseExpression : ternary.TrueExpression;
+                    nodes.UnionWith(SyntaxAggregator.Aggregate(branch, _ => true));
+                }
+            }
+
+            return nodes;
+        }
 
         // Walks the ancestor chain looking for a ternary operator that reaches the starting node through one of its
         // branches (as opposed to its condition). This is used as a heuristic proxy for "the operator is arguably
@@ -1629,6 +1670,11 @@ namespace Bicep.Core.TypeSystem
                 // ternary operator requires the condition to be of bool type
                 var conditionType = typeManager.GetTypeInfo(syntax.ConditionExpression);
                 CollectErrors(errors, conditionType);
+
+                if (conditionType is BooleanLiteralType condition)
+                {
+                    return typeManager.GetTypeInfo(condition.Value ? syntax.TrueExpression : syntax.FalseExpression);
+                }
 
                 var trueType = typeManager.GetTypeInfo(syntax.TrueExpression);
                 CollectErrors(errors, trueType);

@@ -214,7 +214,6 @@ var complex = true == false != null == 4 != 'a' ? -2 && 3 && !4 && 5 : true || f
 //@[04:11) [no-unused-vars (Warning)] Variable "complex" is declared but never used. (bicep core linter https://aka.ms/bicep/linter-diagnostics#no-unused-vars) |complex|
 //@[50:57) [BCP045 (Error)] Cannot apply operator "&&" to operands of type "-2" and "3". (bicep https://aka.ms/bicep/core-diagnostics#BCP045) |-2 && 3|
 //@[61:63) [BCP044 (Error)] Cannot apply operator "!" to operand of type "4". (bicep https://aka.ms/bicep/core-diagnostics#BCP044) |!4|
-//@[79:92) [BCP045 (Error)] Cannot apply operator "&&" to operands of type "false" and "null". (bicep https://aka.ms/bicep/core-diagnostics#BCP045) |false && null|
 
 var nestedTernary = null ? 1 : 2 ? true ? 'a': 'b' : false ? 'd' : 15
 //@[04:17) [BCP028 (Error)] Identifier "nestedTernary" is declared multiple times. Remove or rename the duplicates. (bicep https://aka.ms/bicep/core-diagnostics#BCP028) |nestedTernary|
