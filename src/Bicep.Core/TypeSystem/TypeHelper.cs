@@ -90,12 +90,11 @@ namespace Bicep.Core.TypeSystem
         private static TypeSymbol MergeObjectTypes(IEnumerable<TypeSymbol> types, HashSet<(TypeSymbol, TypeSymbol)> visiting)
         {
             var inputs = types.ToArray();
+            TypeSymbol Fallback() => inputs.Any(IsOrContainsSecureType) ? LanguageConstants.SecureObject : LanguageConstants.Object;
 
             // The result holds every input's members, so it's secure if any input, or any alternative of one, is
             // secure as a whole. Secure properties stay secure on their own, so they don't make the whole result secure.
             var isSecure = inputs.Any(input => FindPathsToSecureTypeComponents(input, hasTrailingAccessExpressions: true).Any());
-            // The fallback can't say which members are secure, so it's secure as a whole if any of them is.
-            var fallback = inputs.Any(IsOrContainsSecureType) ? LanguageConstants.SecureObject : LanguageConstants.Object;
 
             Dictionary<string, NamedTypeProperty> properties = new(LanguageConstants.IdentifierComparer);
             TypeProperty? additionalProperties = null;
@@ -105,14 +104,14 @@ namespace Bicep.Core.TypeSystem
                 // keys, so we can't list the merged properties.
                 if (TryCollapseTypes([input]) is not ObjectType obj || obj.HasExplicitAdditionalPropertiesType)
                 {
-                    return fallback;
+                    return Fallback();
                 }
 
                 // An open object, such as a declared object type, may hold properties it doesn't list. Those could
                 // replace earlier properties with values we know nothing about.
                 if (obj.AdditionalProperties is not null && properties.Keys.Any(name => !obj.Properties.ContainsKey(name)))
                 {
-                    return fallback;
+                    return Fallback();
                 }
 
                 additionalProperties ??= obj.AdditionalProperties;
@@ -126,7 +125,7 @@ namespace Bicep.Core.TypeSystem
                             var pair = (previousObject, nextObject);
                             if (!visiting.Add(pair))
                             {
-                                return fallback;
+                                return Fallback();
                             }
 
                             mergedType = MergeObjectTypes([previousObject, nextObject], visiting);
