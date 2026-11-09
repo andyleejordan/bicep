@@ -539,14 +539,22 @@ namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests
         [DataRow("cfg.password", 1)]
         [DataRow("wrapped[0].value", 1)]
         [DataRow("merged.name", 0)]
+        [DataRow("spreadConfig.other[0]", 1)]
+        [DataRow("overwritten.password", 0)]
         public void Reads_through_variables_whose_types_hide_secrets_are_found(string expression, int warnings)
             => CompileAndTest($$"""
                 @secure()
                 param secret string
+                @secure()
+                param secureObj object
                 var parts = split(secret, ',')
                 var cfg = json(secret)
                 var wrapped = map(parts, p => { value: p })
                 var merged = union({ password: secret }, { name: 'public' })
+                var overrides = { other: split(secret, ',') }
+                var spreadConfig = { password: secureObj, ...overrides }
+                var overwritten = { password: secret, ...{ password: 'public' } }
+                var kept = { password: secret, ...{ name: 'public' } }
                 output result string = {{expression}}
                 """, OnCompileErrors.IncludeErrors,
                 Enumerable.Repeat($"{description} Found possible secret: secure value 'secret'", warnings).ToArray());

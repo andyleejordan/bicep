@@ -336,10 +336,15 @@ public class NoSecureValuesInInsecureInputsRuleTests : SecureAssignmentCheckerTe
     [DataRow("public[0]", 0)]
     [DataRow("cfg.password", 1)]
     [DataRow("wrapped[0].value", 1)]
+    [DataRow("spreadConfig.other[0]", 1)]
+    [DataRow("overwritten.password", 0)]
+    [DataRow("kept.password", 1)]
     public void Reads_follow_initializers_whose_types_hide_secrets(string expression, int leakWarnings)
         => AssertFlow($$"""
             @secure()
             param secret string
+            @secure()
+            param secureObj object
             param plain string
             var parts = split(secret, ',')
             var alias = parts
@@ -349,6 +354,10 @@ public class NoSecureValuesInInsecureInputsRuleTests : SecureAssignmentCheckerTe
             var public = split(plain, ',')
             var cfg = json(secret)
             var wrapped = map(parts, p => { value: p })
+            var overrides = { other: split(secret, ',') }
+            var spreadConfig = { password: secureObj, ...overrides }
+            var overwritten = { password: secret, ...{ password: 'public' } }
+            var kept = { password: secret, ...{ name: 'public' } }
             module child 'child.bicep' = {
               name: 'child'
               params: {

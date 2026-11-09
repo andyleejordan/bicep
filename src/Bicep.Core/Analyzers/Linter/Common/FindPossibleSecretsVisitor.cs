@@ -91,9 +91,12 @@ namespace Bicep.Core.Analyzers.Linter.Common
             }
 
             if (syntax.TryGetPropertyName() is { } propertyName &&
-                TryResolvePropertyInitializer(syntax.BaseExpression, propertyName) is { } propertyValue)
+                TryResolvePropertyInitializer(syntax.BaseExpression, propertyName, out var propertyValue))
             {
-                AddForwardedSecrets(propertyValue, syntax.IndexExpression);
+                if (propertyValue is not null)
+                {
+                    AddForwardedSecrets(propertyValue, syntax.IndexExpression);
+                }
             }
             // Any other read, like parts[0] or cfg.password from json(secret), may select any part of the value.
             // If its type has lost track of the secret, follow the whole initializer, just as reading it inline would.
@@ -105,32 +108,84 @@ namespace Bicep.Core.Analyzers.Linter.Common
         }
 
         private SyntaxBase? TryResolveInitializer(SyntaxBase syntax)
-            => syntax switch
+        {
+            switch (syntax)
             {
-                VariableAccessSyntax access when semanticModel.GetSymbolInfo(access) is VariableSymbol variable &&
-                    semanticModel.Binder.TryGetCycle(variable) is null
-                    => variable.DeclaringVariable.Value,
-                AccessExpressionSyntax access => access.TryGetPropertyName() is { } propertyName
-                    ? TryResolvePropertyInitializer(access.BaseExpression, propertyName)
-                    : TryResolveInitializer(access.BaseExpression),
-                _ => null,
-            };
+                case VariableAccessSyntax access when semanticModel.GetSymbolInfo(access) is VariableSymbol variable &&
+                    semanticModel.Binder.TryGetCycle(variable) is null:
+                    return variable.DeclaringVariable.Value;
+                case AccessExpressionSyntax access when access.TryGetPropertyName() is { } propertyName &&
+                    TryResolvePropertyInitializer(access.BaseExpression, propertyName, out var propertyValue):
+                    return propertyValue;
+                case AccessExpressionSyntax access:
+                    return access.TryGetPropertyName() is null ? TryResolveInitializer(access.BaseExpression) : null;
+                default:
+                    return null;
+            }
+        }
 
-        private SyntaxBase? TryResolvePropertyInitializer(SyntaxBase syntax, string propertyName)
-            // Follow only the selected property, not its siblings. Spreads may replace that property,
-            // and cyclic variables already have a compiler diagnostic, so neither is followed here.
-            => syntax switch
+        private bool TryResolvePropertyInitializer(SyntaxBase syntax, string propertyName, out SyntaxBase? propertyValue)
+            // Follow only the selected property, not its siblings. If a spread can't be resolved or a variable
+            // is cyclic, let the caller use its conservative fallback instead.
+        {
+            switch (syntax)
             {
-                ObjectSyntax obj when !obj.Children.OfType<SpreadExpressionSyntax>().Any()
-                    => obj.TryGetPropertyByName(propertyName)?.Value,
-                VariableAccessSyntax access when semanticModel.GetSymbolInfo(access) is VariableSymbol variable &&
-                    semanticModel.Binder.TryGetCycle(variable) is null
-                    => TryResolvePropertyInitializer(variable.DeclaringVariable.Value, propertyName),
-                AccessExpressionSyntax access when access.TryGetPropertyName() is { } selectedProperty &&
-                    TryResolvePropertyInitializer(access.BaseExpression, selectedProperty) is { } selectedValue
-                    => TryResolvePropertyInitializer(selectedValue, propertyName),
-                _ => null,
-            };
+                case ObjectSyntax obj:
+                    return TryResolveObjectPropertyInitializer(obj, propertyName, out propertyValue);
+                case VariableAccessSyntax access when semanticModel.GetSymbolInfo(access) is VariableSymbol variable &&
+                    semanticModel.Binder.TryGetCycle(variable) is null:
+                    return TryResolvePropertyInitializer(variable.DeclaringVariable.Value, propertyName, out propertyValue);
+                case AccessExpressionSyntax access when access.TryGetPropertyName() is { } selectedProperty:
+                    if (!TryResolvePropertyInitializer(access.BaseExpression, selectedProperty, out var selectedValue))
+                    {
+                        propertyValue = null;
+                        return false;
+                    }
+
+                    if (selectedValue is null)
+                    {
+                        propertyValue = null;
+                        return true;
+                    }
+
+                    return TryResolvePropertyInitializer(selectedValue, propertyName, out propertyValue);
+                default:
+                    propertyValue = null;
+                    return false;
+            }
+        }
+
+        private bool TryResolveObjectPropertyInitializer(ObjectSyntax obj, string propertyName, out SyntaxBase? propertyValue)
+        {
+            foreach (var child in obj.Children.Reverse())
+            {
+                if (child is ObjectPropertySyntax property &&
+                    property.TryGetKeyText() is { } key &&
+                    LanguageConstants.IdentifierComparer.Equals(key, propertyName))
+                {
+                    propertyValue = property.Value;
+                    return true;
+                }
+
+                if (child is SpreadExpressionSyntax spread)
+                {
+                    // A later spread may replace this property. If its value can't be resolved, don't trust an
+                    // earlier property; the caller will conservatively inspect the whole initializer instead.
+                    if (!TryResolvePropertyInitializer(spread.Expression, propertyName, out propertyValue))
+                    {
+                        return false;
+                    }
+
+                    if (propertyValue is not null)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            propertyValue = null;
+            return true;
+        }
 
         private void AddForwardedSecrets(SyntaxBase syntax, SyntaxBase anchor)
         {
