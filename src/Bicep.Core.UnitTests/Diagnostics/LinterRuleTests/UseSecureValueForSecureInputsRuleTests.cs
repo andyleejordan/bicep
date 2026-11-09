@@ -541,4 +541,23 @@ resource sqlLogicalServerRes 'Microsoft.Sql/servers@2024-05-01-preview' = {
               }
             }
             """, "@secure()\nparam value string", 1, 0);
+
+    // A part of a secret is secret too, whether it's read inline or through a variable.
+    [TestMethod]
+    [DataRow("split(secret, ',')[0]")]
+    [DataRow("parts[0]")]
+    [DataRow("cfg.password")]
+    public void Reads_of_parts_of_secrets_satisfy_secure_module_parameters(string expression)
+        => AssertFlow($$"""
+            @secure()
+            param secret string
+            var parts = split(secret, ',')
+            var cfg = json(secret)
+            module child 'child.bicep' = {
+              name: 'child'
+              params: {
+                value: {{expression}}
+              }
+            }
+            """, "@secure()\nparam value string", 0, 0);
 }

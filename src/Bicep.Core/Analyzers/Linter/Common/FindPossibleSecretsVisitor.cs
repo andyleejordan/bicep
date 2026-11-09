@@ -85,14 +85,36 @@ namespace Bicep.Core.Analyzers.Linter.Common
             possibleSecrets.AddRange(FindPathsToSecureTypeComponents(semanticModel.GetTypeInfo(syntax))
                 .Select(pathToSecureComponent => new PossibleSecret(syntax.IndexExpression, PossibleSecretMessage(syntax.ToString() + pathToSecureComponent))));
 
-            if (possibleSecrets.Count == secretCount &&
-                trailingAccessExpressions == 0 &&
-                syntax.TryGetPropertyName() is { } propertyName &&
+            if (possibleSecrets.Count != secretCount || trailingAccessExpressions > 0)
+            {
+                return;
+            }
+
+            if (syntax.TryGetPropertyName() is { } propertyName &&
                 TryResolvePropertyInitializer(syntax.BaseExpression, propertyName) is { } propertyValue)
             {
                 AddForwardedSecrets(propertyValue, syntax.IndexExpression);
             }
+            // Any other read, like parts[0] or cfg.password from json(secret), may select any part of the value.
+            // If its type has lost track of the secret, follow the whole initializer, just as reading it inline would.
+            else if (!TypeHelper.IsOrContainsSecureType(semanticModel.GetTypeInfo(syntax.BaseExpression)) &&
+                TryResolveInitializer(syntax.BaseExpression) is { } initializer)
+            {
+                AddForwardedSecrets(initializer, syntax.IndexExpression);
+            }
         }
+
+        private SyntaxBase? TryResolveInitializer(SyntaxBase syntax)
+            => syntax switch
+            {
+                VariableAccessSyntax access when semanticModel.GetSymbolInfo(access) is VariableSymbol variable &&
+                    semanticModel.Binder.TryGetCycle(variable) is null
+                    => variable.DeclaringVariable.Value,
+                AccessExpressionSyntax access => access.TryGetPropertyName() is { } propertyName
+                    ? TryResolvePropertyInitializer(access.BaseExpression, propertyName)
+                    : TryResolveInitializer(access.BaseExpression),
+                _ => null,
+            };
 
         private SyntaxBase? TryResolvePropertyInitializer(SyntaxBase syntax, string propertyName)
             // Follow only the selected property, not its siblings. Spreads may replace that property,

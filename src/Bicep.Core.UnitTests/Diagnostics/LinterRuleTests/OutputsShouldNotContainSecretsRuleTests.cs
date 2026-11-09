@@ -532,5 +532,23 @@ namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests
                 output result {{type}} = {{expression}}
                 """, OnCompileErrors.IncludeErrors,
                 Enumerable.Repeat($"{description} Found possible secret: secure value 'secureObj'", warnings).ToArray());
+
+        [TestMethod]
+        [DataRow("split(secret, ',')[0]", 1)]
+        [DataRow("parts[0]", 1)]
+        [DataRow("cfg.password", 1)]
+        [DataRow("wrapped[0].value", 1)]
+        [DataRow("merged.name", 0)]
+        public void Reads_through_variables_whose_types_hide_secrets_are_found(string expression, int warnings)
+            => CompileAndTest($$"""
+                @secure()
+                param secret string
+                var parts = split(secret, ',')
+                var cfg = json(secret)
+                var wrapped = map(parts, p => { value: p })
+                var merged = union({ password: secret }, { name: 'public' })
+                output result string = {{expression}}
+                """, OnCompileErrors.IncludeErrors,
+                Enumerable.Repeat($"{description} Found possible secret: secure value 'secret'", warnings).ToArray());
     }
 }

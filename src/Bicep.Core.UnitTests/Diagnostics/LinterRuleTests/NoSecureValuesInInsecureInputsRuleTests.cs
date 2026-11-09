@@ -322,6 +322,41 @@ public class NoSecureValuesInInsecureInputsRuleTests : SecureAssignmentCheckerTe
             }
             """, "param value array", 0, 1);
 
+    // A read like parts[0] or cfg.password can't pick out one part of an initializer whose type has lost the
+    // secret, so the whole initializer is followed, as reading split(secret, ',')[0] inline would. A type that
+    // still knows where the secret is, like the tuple in mixed, decides on its own.
+    [TestMethod]
+    [DataRow("split(secret, ',')[0]", 1)]
+    [DataRow("parts[0]", 1)]
+    [DataRow("alias[0]", 1)]
+    [DataRow("config.parts[0]", 1)]
+    [DataRow("nested[0][0]", 1)]
+    [DataRow("mixed[0]", 1)]
+    [DataRow("mixed[1]", 0)]
+    [DataRow("public[0]", 0)]
+    [DataRow("cfg.password", 1)]
+    [DataRow("wrapped[0].value", 1)]
+    public void Reads_follow_initializers_whose_types_hide_secrets(string expression, int leakWarnings)
+        => AssertFlow($$"""
+            @secure()
+            param secret string
+            param plain string
+            var parts = split(secret, ',')
+            var alias = parts
+            var config = { parts: parts }
+            var nested = [parts]
+            var mixed = [secret, 'public']
+            var public = split(plain, ',')
+            var cfg = json(secret)
+            var wrapped = map(parts, p => { value: p })
+            module child 'child.bicep' = {
+              name: 'child'
+              params: {
+                value: {{expression}}
+              }
+            }
+            """, "param value string", 0, leakWarnings);
+
     [TestMethod]
     public void Union_of_a_secure_object_and_an_empty_object_satisfies_a_secure_module_parameter()
         => AssertFlow("""
