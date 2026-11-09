@@ -339,6 +339,9 @@ public class NoSecureValuesInInsecureInputsRuleTests : SecureAssignmentCheckerTe
     [DataRow("spreadConfig.other[0]", 1)]
     [DataRow("overwritten.password", 0)]
     [DataRow("kept.password", 1)]
+    [DataRow("spreadJson.x", 1)]
+    [DataRow("spreadJson.x[0]", 1)]
+    [DataRow("spreadJson.x.y", 1)]
     public void Reads_follow_initializers_whose_types_hide_secrets(string expression, int leakWarnings)
         => AssertFlow($$"""
             @secure()
@@ -358,6 +361,7 @@ public class NoSecureValuesInInsecureInputsRuleTests : SecureAssignmentCheckerTe
             var spreadConfig = { password: secureObj, ...overrides }
             var overwritten = { password: secret, ...{ password: 'public' } }
             var kept = { password: secret, ...{ name: 'public' } }
+            var spreadJson = { ...json(secret) }
             module child 'child.bicep' = {
               name: 'child'
               params: {
