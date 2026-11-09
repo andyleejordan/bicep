@@ -84,7 +84,8 @@ namespace Bicep.Core.TypeSystem
 
         /// <summary>
         /// Merges object types while tracking visited pairs to avoid recursion cycles.
-        /// Falls back to 'object' for unknown property sets or recursive pairs, keeping @secure if any input has it.
+        /// Falls back to 'object' for unknown property sets or recursive pairs, or 'secureObject' if any input
+        /// contains a secure type.
         /// </summary>
         private static TypeSymbol MergeObjectTypes(IEnumerable<TypeSymbol> types, HashSet<(TypeSymbol, TypeSymbol)> visiting)
         {
@@ -93,7 +94,8 @@ namespace Bicep.Core.TypeSystem
             // The result holds every input's members, so it's secure if any input, or any alternative of one, is
             // secure as a whole. Secure properties stay secure on their own, so they don't make the whole result secure.
             var isSecure = inputs.Any(input => FindPathsToSecureTypeComponents(input, hasTrailingAccessExpressions: true).Any());
-            var fallback = isSecure ? LanguageConstants.SecureObject : LanguageConstants.Object;
+            // The fallback can't say which members are secure, so it's secure as a whole if any of them is.
+            var fallback = inputs.Any(IsOrContainsSecureType) ? LanguageConstants.SecureObject : LanguageConstants.Object;
 
             Dictionary<string, NamedTypeProperty> properties = new(LanguageConstants.IdentifierComparer);
             TypeProperty? additionalProperties = null;
@@ -106,7 +108,13 @@ namespace Bicep.Core.TypeSystem
                     return fallback;
                 }
 
-                // An open object, such as a declared object type, may hold properties it doesn't list.
+                // An open object, such as a declared object type, may hold properties it doesn't list. Those could
+                // replace earlier properties with values we know nothing about.
+                if (obj.AdditionalProperties is not null && properties.Keys.Any(name => !obj.Properties.ContainsKey(name)))
+                {
+                    return fallback;
+                }
+
                 additionalProperties ??= obj.AdditionalProperties;
                 foreach (var property in obj.Properties.Values)
                 {
