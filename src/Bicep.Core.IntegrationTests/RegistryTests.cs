@@ -6,7 +6,9 @@ using System.Diagnostics.CodeAnalysis;
 using Bicep.Core.Diagnostics;
 using Bicep.Core.Extensions;
 using Bicep.Core.FileSystem;
+using Bicep.Core.Modules;
 using Bicep.Core.Registry;
+using Bicep.Core.Registry.Oci;
 using Bicep.Core.Samples;
 using Bicep.Core.SourceGraph;
 using Bicep.Core.UnitTests;
@@ -121,31 +123,31 @@ namespace Bicep.Core.IntegrationTests
                 {
                     x.Level.Should().Be(DiagnosticLevel.Error);
                     x.Code.Should().Be("BCP192");
-                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:localhost:5000/passthrough/port:v1"));
+                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:port.invalid:5000/passthrough/port:v1"));
                 },
                 x =>
                 {
                     x.Level.Should().Be(DiagnosticLevel.Error);
                     x.Code.Should().Be("BCP192");
-                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:127.0.0.1/passthrough/ipv4:v1"));
+                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:ipv4.invalid/passthrough/ipv4:v1"));
                 },
                 x =>
                 {
                     x.Level.Should().Be(DiagnosticLevel.Error);
                     x.Code.Should().Be("BCP192");
-                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:127.0.0.1:5000/passthrough/ipv4port:v1"));
+                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:ipv4-port.invalid:5000/passthrough/ipv4port:v1"));
                 },
                 x =>
                 {
                     x.Level.Should().Be(DiagnosticLevel.Error);
                     x.Code.Should().Be("BCP192");
-                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:[::1]/passthrough/ipv6:v1"));
+                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:ipv6.invalid/passthrough/ipv6:v1"));
                 },
                 x =>
                 {
                     x.Level.Should().Be(DiagnosticLevel.Error);
                     x.Code.Should().Be("BCP192");
-                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:[::1]:5000/passthrough/ipv6port:v1"));
+                    x.Message.Should().StartWith(string.Format(expectedErrorMessage, "br:ipv6-port.invalid:5000/passthrough/ipv6port:v1"));
                 });
         }
 
@@ -401,7 +403,13 @@ namespace Bicep.Core.IntegrationTests
         }
 
         private static IFileHandle GetEntryPoint(IDependencyHelper dependencyHelper, ExternalArtifactReference reference) =>
-            dependencyHelper.Construct<IArtifactRegistryProvider>().GetRegistry(reference).GetEntryPoint(reference);
+            // The entry point's path, whether or not the artifact is restored yet.
+            reference switch
+            {
+                OciArtifactReference oci => oci.CacheEntry.EntryPoint,
+                TemplateSpecModuleReference templateSpec => templateSpec.CacheEntry.EntryPoint,
+                _ => throw new InvalidOperationException($"Unexpected reference type '{reference.GetType().Name}'."),
+            };
 
         private static ResultWithDiagnosticBuilder<ExternalArtifactReference> TryGetModuleReference(IArtifactReferenceResolver resolver, BicepSourceFile referencingFile, string reference) =>
             resolver.TryResolve(referencingFile.FileHandle.Uri, ArtifactType.Module, reference).Transform(x => (ExternalArtifactReference)x);
