@@ -14,6 +14,60 @@ namespace Bicep.Core.UnitTests.Diagnostics.LinterRuleTests;
 public class UseSecureValueForSecureInputsRuleTests : SecureAssignmentCheckerTestsBase
 {
     [TestMethod]
+    [DataRow("{ secureList: [{ name: 'public', value: secret }] }")]
+    [DataRow("shared")]
+    [DataRow("alias")]
+    public void Secure_containers_preserve_member_and_item_shapes(string expression)
+        => AssertFlow($$"""
+            @secure()
+            param secret string
+            var shared = { secureList: [{ name: 'public', value: secret }] }
+            var alias = shared
+            module child 'child.bicep' = {
+              name: 'child'
+              params: {
+                settings: {{expression}}
+              }
+            }
+            """, """
+            @secure()
+            param settings {
+              secureList: {
+                name: string
+                value: string
+              }[]
+            }?
+            """, [InputWarning("settings.secureList[0].name")], []);
+
+    [TestMethod]
+    public void Shared_members_keep_inherited_security_local_to_each_target()
+        => AssertFlow("""
+            var shared = { value: 'public' }
+            module child 'child.bicep' = {
+              name: 'child'
+              params: {
+                settings: {
+                  protected: { first: shared, second: shared }
+                  public: shared
+                }
+              }
+            }
+            """, """
+            type entry = { value: string }
+            param settings {
+              @secure()
+              protected: {
+                first: entry
+                second: entry
+              }
+              public: entry
+            }
+            """, [
+                InputWarning("settings.protected.first.value"),
+                InputWarning("settings.protected.second.value"),
+            ], []);
+
+    [TestMethod]
     [DataRow(8)]
     [DataRow(22)]
     [Timeout(60_000)]

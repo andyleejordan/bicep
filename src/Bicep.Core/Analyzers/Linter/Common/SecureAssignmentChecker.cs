@@ -24,7 +24,7 @@ public sealed class SecureAssignmentChecker
     private readonly bool findLeaks;
     private ResourceTypeResolver? resolver;
     // A variable can satisfy one target and violate another. Keep this cache local to the assignment and rule.
-    private readonly Dictionary<(VariableSymbol, TypeSymbol), Mismatch[]> variableMismatches = [];
+    private readonly Dictionary<(VariableSymbol, TypeSymbol, bool, bool), Mismatch[]> variableMismatches = [];
 
     // The checks below recurse through iterators. They're methods rather than local functions because CA1851
     // takes tens of seconds to analyze recursive local iterators that capture state.
@@ -80,7 +80,8 @@ public sealed class SecureAssignmentChecker
 
     // A finding is reported on the value it comes from, or on the variable reference that led to it, since
     // a variable's declaration can be shared by several modules.
-    private IEnumerable<Mismatch> CheckExpression(SyntaxBase value, TypeSymbol target, string path, SyntaxBase? reference)
+    private IEnumerable<Mismatch> CheckExpression(SyntaxBase value, TypeSymbol target, string path, SyntaxBase? reference,
+        bool targetSecure = false, bool arrayIndicesUnknown = false)
     {
         // Compiler errors already explain why this value cannot be checked.
         if (model.GetTypeInfo(value) is ErrorType)
@@ -95,37 +96,46 @@ public sealed class SecureAssignmentChecker
             yield break;
         }
 
+        targetSecure |= target.ValidationFlags.HasFlag(TypeSymbolValidationFlags.IsSecure);
+
         // Look through syntax that only passes values along or builds them, checking each part against the
         // matching part of the target. Anything else is a leaf, whose type is compared below.
         // With a spread, members can't be matched to syntax, so compare the whole value's type.
         var parts = value switch
         {
             ParenthesizedExpressionSyntax parenthesized =>
-                CheckExpression(parenthesized.Expression, target, path, reference),
+                CheckExpression(parenthesized.Expression, target, path, reference, targetSecure, arrayIndicesUnknown),
             NonNullAssertionSyntax nonNull =>
-                CheckExpression(nonNull.BaseExpression, target, path, reference),
+                CheckExpression(nonNull.BaseExpression, target, path, reference, targetSecure, arrayIndicesUnknown),
             VariableAccessSyntax access when model.GetSymbolInfo(access) is VariableSymbol variable =>
-                CheckVariable(variable, target, path, reference ?? access),
+                CheckVariable(variable, target, path, reference ?? access, targetSecure, arrayIndicesUnknown),
             TernaryOperationSyntax ternary =>
-                CheckExpression(ternary.TrueExpression, target, path, reference)
-                    .Concat(CheckExpression(ternary.FalseExpression, target, path, reference)),
+                CheckExpression(ternary.TrueExpression, target, path, reference, targetSecure, arrayIndicesUnknown)
+                    .Concat(CheckExpression(ternary.FalseExpression, target, path, reference, targetSecure, arrayIndicesUnknown)),
             BinaryOperationSyntax { Operator: BinaryOperator.Coalesce } coalesce =>
-                CheckExpression(coalesce.LeftExpression, target, path, reference)
-                    .Concat(CheckExpression(coalesce.RightExpression, target, path, reference)),
+                CheckExpression(coalesce.LeftExpression, target, path, reference, targetSecure, arrayIndicesUnknown)
+                    .Concat(CheckExpression(coalesce.RightExpression, target, path, reference, targetSecure, arrayIndicesUnknown)),
+            // Array union/concat retain each element's members; a list* read in one member doesn't secure the whole array.
+            FunctionCallSyntaxBase call when model.GetTypeInfo(call) is ArrayType &&
+                (SemanticModelHelper.TryGetNamedFunction(model, SystemNamespaceType.BuiltInName, "union", call) ??
+                    SemanticModelHelper.TryGetNamedFunction(model, SystemNamespaceType.BuiltInName, "concat", call)) is { } composition =>
+                composition.Arguments.SelectMany(argument =>
+                    CheckExpression(argument.Expression, target, path, reference, targetSecure, arrayIndicesUnknown: true)),
             ObjectSyntax obj when TryEnumerateUnionMemberTypes(target) is { } members =>
                 members.Where(member => MayMatch(model.GetTypeInfo(obj), member))
-                    .SelectMany(member => CheckExpression(obj, member, path, reference)),
+                    .SelectMany(member => CheckExpression(obj, member, path, reference, targetSecure)),
             ObjectSyntax obj when !obj.Children.OfType<SpreadExpressionSyntax>().Any() =>
                 obj.Properties.SelectMany(property =>
                 {
                     var name = property.TryGetKeyText();
-                    return CheckExpression(property.Value, GetMemberType(target, name), $"{path}.{name ?? "*"}", reference);
+                    return CheckExpression(property.Value, GetMemberType(target, name), $"{path}.{name ?? "*"}", reference, targetSecure);
                 }),
             ArraySyntax array when !array.Children.OfType<SpreadExpressionSyntax>().Any() =>
                 array.Items.SelectMany((item, index) =>
-                    CheckExpression(item.Value, GetItemType(target, index), $"{path}[{index}]", reference)),
+                    CheckExpression(item.Value, GetItemType(target, arrayIndicesUnknown ? null : index),
+                        $"{path}[{(arrayIndicesUnknown ? "*" : index.ToString())}]", reference, targetSecure)),
             ForSyntax loop =>
-                CheckExpression(loop.Body, GetItemType(target), $"{path}[*]", reference),
+                CheckExpression(loop.Body, GetItemType(target), $"{path}[*]", reference, targetSecure),
             _ => null,
         };
 
@@ -156,7 +166,7 @@ public sealed class SecureAssignmentChecker
         var secret = value is AccessExpressionSyntax or VariableAccessSyntax ? null : secrets.FirstOrDefault();
         var syntax = reference ?? secret?.Syntax ?? value;
         var foundMessage = secret?.FoundMessage ?? FindPossibleSecretsVisitor.PossibleSecretMessage(value.ToString().Trim());
-        var mismatchPaths = Compare(source, target, path, sourceSecure, false, []).ToList();
+        var mismatchPaths = Compare(source, target, path, sourceSecure, targetSecure, []).ToList();
 
         // Like the property rule, skip runtime values given to secure inputs, since their types aren't accurate.
         // This walks every variable the value reads, so only do it when there's a mismatch to report.
@@ -172,13 +182,14 @@ public sealed class SecureAssignmentChecker
         }
     }
 
-    private IEnumerable<Mismatch> CheckVariable(VariableSymbol variable, TypeSymbol target, string path, SyntaxBase reference)
+    private IEnumerable<Mismatch> CheckVariable(VariableSymbol variable, TypeSymbol target, string path, SyntaxBase reference,
+        bool targetSecure, bool arrayIndicesUnknown)
     {
-        var key = (variable, target);
+        var key = (variable, target, targetSecure, arrayIndicesUnknown);
         if (!variableMismatches.TryGetValue(key, out var mismatches))
         {
             // Cache relative paths and declaration-local anchors, not the first caller's destination.
-            mismatches = CheckExpression(variable.DeclaringVariable.Value, target, "", reference: null).ToArray();
+            mismatches = CheckExpression(variable.DeclaringVariable.Value, target, "", reference: null, targetSecure, arrayIndicesUnknown).ToArray();
             variableMismatches.Add(key, mismatches);
         }
 
@@ -313,8 +324,6 @@ public sealed class SecureAssignmentChecker
 
     private static TypeSymbol GetMemberType(TypeSymbol type, string? name) => type switch
     {
-        // A secure container makes each value read from it secure.
-        _ when type.ValidationFlags.HasFlag(TypeSymbolValidationFlags.IsSecure) => type,
         UnionType union => TypeHelper.CreateTypeUnion(union.Members.Where(member => member.Type is not NullType).Select(member => GetMemberType(member.Type, name))),
         DiscriminatedObjectType discriminated => TypeHelper.CreateTypeUnion(discriminated.UnionMembersByKey.Values.Select(member => GetMemberType(member, name))),
         ObjectType obj when name is not null && obj.Properties.TryGetValue(name, out var property) => property.TypeReference.Type,
@@ -326,8 +335,6 @@ public sealed class SecureAssignmentChecker
 
     private static TypeSymbol GetItemType(TypeSymbol type, int? index = null) => type switch
     {
-        // A secure container makes each value read from it secure.
-        _ when type.ValidationFlags.HasFlag(TypeSymbolValidationFlags.IsSecure) => type,
         TupleType tuple when index is { } i && i < tuple.Items.Length => tuple.Items[i].Type,
         _ => TypeHelper.GetArrayItemTypeOrAny(type),
     };

@@ -567,6 +567,38 @@ public class NoSecureValuesInInsecureInputsRuleTests : SecureAssignmentCheckerTe
             """, 0, 0);
     }
 
+    [TestMethod]
+    [DataRow("union")]
+    [DataRow("concat")]
+    [DataRow("sys.union")]
+    public void Array_composition_keeps_list_function_secrets_in_their_members(string function)
+    {
+        var parent = $$"""
+            param enabled bool
+            resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+              name: 'storage'
+            }
+            var entries = enabled ? [{ name: 'admin', value: storage.listKeys().keys[0].value }] : []
+            var alias = entries
+            module child 'child.bicep' = {
+              name: 'export'
+              params: {
+                secrets: {{function}}([], alias, [{ name: 'public', value: 'public' }])
+              }
+            }
+            """;
+        const string child = """
+            param secrets {
+              name: string
+              @secure()
+              value: string
+            }[]
+            """;
+        AssertFlow(parent, child, [InputWarning("secrets[*].value")], []);
+        AssertFlow(parent.Replace("name: 'admin'", "name: storage.listKeys().keys[0].value"), child,
+            [InputWarning("secrets[*].value")], [LeakWarning("secrets[*].name", "storage.listKeys().keys[0].value")]);
+    }
+
     // Not in AVM: its export child declares a secure value member, so a plain `array` child is a leak.
     [TestMethod]
     public void Sql_secrets_export_is_a_secure_source_for_a_plain_child()
